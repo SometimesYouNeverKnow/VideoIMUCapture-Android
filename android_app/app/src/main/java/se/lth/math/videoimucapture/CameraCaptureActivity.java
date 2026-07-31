@@ -119,6 +119,8 @@ public class CameraCaptureActivity extends AppCompatActivity {
     private static final boolean VERBOSE = false;
 
     private Camera2Proxy mCamera2Proxy = null;
+    // Diagnostics-only launch: no preview is created, so the probe has the camera to itself.
+    private boolean mProbeMode = false;
     private CameraHandler mCameraHandler;
     private CameraCaptureFragment mCameraCaptureFragment = null;
     private PermissionRationaleFragment mPermissionFragment = null;
@@ -160,6 +162,9 @@ public class CameraCaptureActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.main_activity);
 
+        // Decided before any fragment exists: in probe mode nothing else may hold the camera.
+        mProbeMode = getIntent().getBooleanExtra(StereoProbe.EXTRA_RUN, false);
+
         // Define a handler that receives camera-control messages from other threads.  All calls
         // to Camera must be made on the same thread.  Note we create this before the renderer
         // thread, so we know the fully-constructed object will be visible.
@@ -175,7 +180,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
                     .beginTransaction()
                     .add(R.id.main_content, fragment, FRAGMENT_TOOLBAR_TAG)
                     .commit();
-            if (PermissionHelper.hasCameraPermission(this)) {
+            if (PermissionHelper.hasCameraPermission(this) && !mProbeMode) {
                 createCameraCaptureFragment();
             }
         }
@@ -250,7 +255,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
             else {
                 PermissionHelper.requestCameraPermission(this);
             }
-        } else if (mCameraCaptureFragment == null) {
+        } else if (mCameraCaptureFragment == null && !mProbeMode) {
             // We now have permission, but have no capture fragment yet.
             if (mPermissionFragment != null) {
                 getSupportFragmentManager().beginTransaction().remove(mPermissionFragment).commit();
@@ -270,8 +275,26 @@ public class CameraCaptureActivity extends AppCompatActivity {
         if (PermissionHelper.hasCameraPermission(this)) {
             final Context appContext = getApplicationContext();
             new Thread(() -> CameraCensus.writeCensus(appContext), "CameraCensus").start();
+            maybeRunStereoProbe();
         }
         Log.d(TAG, "onResume complete: " + this);
+    }
+
+    /**
+     * Diagnostics entry point driven by an intent extra rather than UI, so it can be run
+     * over adb. The probe needs exclusive access to the logical camera, so the preview
+     * camera is released first and reacquired afterwards.
+     */
+    private void maybeRunStereoProbe() {
+        if (!mProbeMode) {
+            return;
+        }
+        mProbeMode = false;
+        getIntent().removeExtra(StereoProbe.EXTRA_RUN);
+        Log.i(TAG, "running stereo probe (no preview created this launch)");
+        releaseCamera();
+        final Context appContext = getApplicationContext();
+        new Thread(() -> StereoProbe.run(appContext), "StereoProbe").start();
     }
 
     public void initializeCamera() {
