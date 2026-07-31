@@ -30,8 +30,11 @@ import android.util.Log;
 import android.util.Size;
 import android.view.Surface;
 
+import java.io.File;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 
 import static java.lang.Math.abs;
 
@@ -48,6 +51,9 @@ public class Camera2Proxy {
     private CameraCharacteristics mCameraCharacteristics;
     private CameraDevice mCameraDevice;
     private CameraCaptureSession mCaptureSession;
+    private StillCaptureManager mStillCaptureManager;
+    // Most recent metered result, used as the base exposure a bracket steps away from.
+    private volatile TotalCaptureResult mLastResult;
     private CaptureRequest.Builder mPreviewRequestBuilder;
     private Rect sensorArraySize;
 
@@ -90,6 +96,24 @@ public class Camera2Proxy {
             releaseCamera();
         }
     };
+
+    /**
+     * Fire a still burst into the given directory. Safe to call whether or not a video
+     * recording is in progress; the stills share the preview session.
+     */
+    public void captureStills(StillCaptureManager.Mode mode, int shots, float stops,
+                              boolean writeRaw, File outputDir, RecordingWriter writer) {
+        if (mStillCaptureManager == null) {
+            Log.w(TAG, "captureStills before the session exists");
+            return;
+        }
+        mStillCaptureManager.capture(mCameraDevice, mCaptureSession, mPreviewRequestBuilder,
+                mLastResult, mode, shots, stops, writeRaw, outputDir, writer);
+    }
+
+    public StillCaptureManager getStillCaptureManager() {
+        return mStillCaptureManager;
+    }
 
     public void startRecordingCaptureResult(RecordingWriter recordingWriter) {
         mRecordingWriter = recordingWriter;
@@ -200,6 +224,10 @@ public class Camera2Proxy {
             mCameraDevice.close();
             mCameraDevice = null;
         }
+        if (mStillCaptureManager != null) {
+            mStillCaptureManager.release();
+            mStillCaptureManager = null;
+        }
         mPreviewSurfaceTexture = null;
         mCameraIdStr = "";
         stopBackgroundThread();
@@ -233,6 +261,16 @@ public class Camera2Proxy {
                 mPreviewSurface = new Surface(mPreviewSurfaceTexture);
             }
             mPreviewRequestBuilder.addTarget(mPreviewSurface);
+
+            // Stills share the preview session: the JPEG (and RAW) readers must be declared
+            // as outputs at configuration time, even though they only receive frames when a
+            // burst is fired.
+            mStillCaptureManager =
+                    new StillCaptureManager(mCameraCharacteristics, mBackgroundHandler,
+                            ((CameraCaptureActivity) mActivity).getmImuManager());
+            final List<Surface> stillSurfaces =
+                    mStillCaptureManager.getSurfaces(mStillCaptureManager.rawSupported());
+
             CameraCaptureSession.StateCallback cb =
                     new CameraCaptureSession.StateCallback() {
 
@@ -249,11 +287,16 @@ public class Camera2Proxy {
                         }
                     };
             if (Build.VERSION.SDK_INT >= 28) {
+                List<OutputConfiguration> outputs = new ArrayList<>();
                 OutputConfiguration outputConfiguration = new OutputConfiguration(mPreviewSurface);
                 mCameraSettingsManager.updateOutputConfiguration(outputConfiguration);
+                outputs.add(outputConfiguration);
+                for (Surface s : stillSurfaces) {
+                    outputs.add(new OutputConfiguration(s));
+                }
                 mCameraDevice.createCaptureSession(new SessionConfiguration(
                         SessionConfiguration.SESSION_REGULAR,
-                        Collections.singletonList(outputConfiguration),
+                        outputs,
                         r -> mBackgroundHandler.post(r),
                         cb));
             } else {
@@ -305,6 +348,8 @@ public class Camera2Proxy {
                                                @NonNull CaptureRequest request,
                                                TotalCaptureResult result) {
 
+                    // Keep the latest metered result: a bracket steps away from this.
+                    mLastResult = result;
 
                     if (mCameraSettingsManager.focusOnTouch()) {
                         mFocusTriggered |= (result.get(CaptureResult.CONTROL_AF_STATE) == CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN);

@@ -36,6 +36,8 @@ import android.view.ViewGroup;
 
 import com.google.android.material.appbar.MaterialToolbar;
 
+import java.io.File;
+import java.io.IOException;
 import java.lang.ref.WeakReference;
 
 /**
@@ -276,6 +278,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
             final Context appContext = getApplicationContext();
             new Thread(() -> CameraCensus.writeCensus(appContext), "CameraCensus").start();
             maybeRunStereoProbe();
+            maybeCaptureStillsFromIntent();
         }
         Log.d(TAG, "onResume complete: " + this);
     }
@@ -367,6 +370,93 @@ public class CameraCaptureActivity extends AppCompatActivity {
 
     public String getResultRoot() {
         return getExternalFilesDir(null).getAbsolutePath();
+    }
+
+    /**
+     * Fire a still burst. Stills land in their own timestamped directory alongside video
+     * recordings, with a video_meta.pb3 carrying one StillMetaData row per shot, so a
+     * tripod session is described exactly like a video session.
+     *
+     * Exposed as an intent extra so it can be driven over adb without UI:
+     *   adb shell am start -n se.lth.math.videoimucapture/.CameraCaptureActivity \
+     *       --es still_mode exposure --ei still_shots 5 --ef still_stops 2.0 --ez still_raw true
+     */
+    public void captureStills(StillCaptureManager.Mode mode, int shots, float stops,
+                              boolean writeRaw) {
+        if (mCamera2Proxy == null) {
+            Log.w(TAG, "captureStills with no camera");
+            return;
+        }
+        java.text.SimpleDateFormat fmt =
+                new java.text.SimpleDateFormat("yyyy_MM_dd_HH_mm_ss", java.util.Locale.US);
+        File dir = new File(getResultRoot(), "stills_" + fmt.format(new java.util.Date()));
+        if (!dir.mkdirs() && !dir.isDirectory()) {
+            Log.e(TAG, "could not create " + dir);
+            return;
+        }
+        RecordingWriter writer = sRecordingWriter;
+        boolean startedForStills = false;
+        if (!writer.isRecording()) {
+            try {
+                writer.startRecording(new File(dir, "video_meta.pb3").getAbsolutePath());
+                startedForStills = true;
+            } catch (IOException e) {
+                Log.e(TAG, "could not open still metadata file: " + e);
+                return;
+            }
+        }
+        mCamera2Proxy.captureStills(mode, shots, stops, writeRaw, dir, writer);
+
+        if (startedForStills) {
+            // Close the metadata file once the burst has drained. The delay is generous:
+            // a RAW burst writes tens of MB per shot.
+            final RecordingWriter w = writer;
+            new Handler(getMainLooper()).postDelayed(w::stopRecording, 2000L + 1500L * shots);
+        }
+        Log.i(TAG, "still burst " + mode + " x" + shots + " -> " + dir);
+    }
+
+    private void maybeCaptureStillsFromIntent() {
+        String mode = getIntent().getStringExtra("still_mode");
+        if (mode == null) {
+            return;
+        }
+        getIntent().removeExtra("still_mode");
+        final StillCaptureManager.Mode m;
+        switch (mode) {
+            case "exposure":
+                m = StillCaptureManager.Mode.EXPOSURE_BRACKET;
+                break;
+            case "focus":
+                m = StillCaptureManager.Mode.FOCUS_STACK;
+                break;
+            default:
+                m = StillCaptureManager.Mode.SINGLE;
+                break;
+        }
+        final int shots = getIntent().getIntExtra("still_shots", 1);
+        final float stops = getIntent().getFloatExtra("still_stops", 2.0f);
+        final boolean raw = getIntent().getBooleanExtra("still_raw", true);
+
+        // Wait for the camera to actually exist rather than guessing a delay: an adb-driven
+        // launch onto a sleeping screen pauses the activity and releases the camera, so a
+        // fixed timer fires into nothing. Poll, with a ceiling.
+        final Handler handler = new Handler(getMainLooper());
+        final int[] attempts = {0};
+        final Runnable tryCapture = new Runnable() {
+            @Override
+            public void run() {
+                if (mCamera2Proxy != null) {
+                    captureStills(m, shots, stops, raw);
+                } else if (++attempts[0] < 40) {
+                    handler.postDelayed(this, 500L);
+                } else {
+                    Log.w(TAG, "gave up waiting for the camera to fire a still burst");
+                }
+            }
+        };
+        // Initial delay lets AE/AWB converge before the first frame of the bracket.
+        handler.postDelayed(tryCapture, 2500L);
     }
 
 

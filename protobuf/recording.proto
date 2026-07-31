@@ -110,6 +110,40 @@ message OrientationData {
   float heading_accuracy_rad = 4; // -1 if not reported
 }
 
+// One frame of a still burst (single shot, exposure bracket, or focus stack).
+// Written per shot; shots of one burst share burst_id and count up in burst_index.
+message StillMetaData {
+  int64 time_ns = 1;              // SENSOR_TIMESTAMP, same clock as IMUData.time_ns
+  int64 burst_id = 2;             // elapsedRealtimeNanos when the burst was requested
+  int32 burst_index = 3;
+  int32 burst_size = 4;
+
+  enum BurstKind {
+    SINGLE = 0;
+    EXPOSURE_BRACKET = 1;
+    FOCUS_STACK = 2;
+  }
+  BurstKind kind = 5;
+
+  string jpeg_file = 6;           // basenames within the recording directory
+  string dng_file = 7;
+
+  int64 exposure_time_ns = 8;
+  int32 iso = 9;
+  float focus_distance_diopters = 10;
+  float focal_length_mm = 11;
+  int64 frame_duration_ns = 12;
+  int64 frame_readout_ns = 13;
+  float ev_offset = 14;           // stops from the metered/base exposure, for HDR merge
+  string physical_camera_id = 15; // which lens, when driving a logical multi-camera
+
+  // Orientation at the shutter instant, taken from the rotation-vector stream (x,y,z,w).
+  // DERIVED (OS sensor fusion), not a measurement — but it is what lets a tripod pan be
+  // stitched from known angles instead of by feature matching.
+  repeated float orientation_quaternion = 16;
+  int64 orientation_time_ns = 17; // timestamp of the sample actually used
+}
+
 // GNSS fix from LocationManager (GPS provider, no fused black box).
 // elapsed_realtime_ns is on the same clock family as the sensor timestamps — that is the join.
 // altitude is WGS84 ellipsoid metres, NOT geoid/MSL: geoid separation is ~30 m in New England.
@@ -178,6 +212,7 @@ message VideoCaptureData {
   repeated StepData steps = 7;
   repeated OrientationData orientation = 8;
   repeated GnssData gnss = 9;
+  repeated StillMetaData stills = 10;
 }
 
 message MessageWrapper {
@@ -191,5 +226,6 @@ message MessageWrapper {
     StepData step_data = 7;
     OrientationData orientation_data = 8;
     GnssData gnss_data = 9;
+    StillMetaData still_data = 10;
   }
 }

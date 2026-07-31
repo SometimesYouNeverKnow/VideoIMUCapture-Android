@@ -20,6 +20,7 @@ import se.lth.math.videoimucapture.RecordingProtos.EnvironmentData;
 import se.lth.math.videoimucapture.RecordingProtos.StepData;
 import se.lth.math.videoimucapture.RecordingProtos.OrientationData;
 import se.lth.math.videoimucapture.RecordingProtos.GnssData;
+import se.lth.math.videoimucapture.RecordingProtos.StillMetaData;
 import se.lth.math.videoimucapture.RecordingProtos.MessageWrapper;
 
 import static java.lang.Math.abs;
@@ -158,6 +159,11 @@ public class RecordingWriter implements Runnable{
                 VideoCaptureData.newBuilder().addGnss(msg.getGnssData())
                         .build().writeTo(mFileStream);
                 break;
+            case STILL_DATA:
+                if (VERBOSE) Log.d(TAG,"Got Still meta");
+                VideoCaptureData.newBuilder().addStills(msg.getStillData())
+                        .build().writeTo(mFileStream);
+                break;
         }
     }
 
@@ -235,6 +241,9 @@ public class RecordingWriter implements Runnable{
     }
     public void queueData(GnssData msg) {
         queueData(MessageWrapper.newBuilder().setGnssData(msg).build());
+    }
+    public void queueData(StillMetaData msg) {
+        queueData(MessageWrapper.newBuilder().setStillData(msg).build());
     }
 
 }

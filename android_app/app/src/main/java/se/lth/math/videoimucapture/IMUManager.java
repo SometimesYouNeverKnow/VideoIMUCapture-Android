@@ -88,6 +88,11 @@ public class IMUManager extends SensorEventCallback {
     // record start so "steps during clip" is a diff, not a guess.
     private volatile float mLastStepCount = -1;
     private volatile long mLastStepCountTs = 0;
+    // Latest GAME_ROTATION_VECTOR sample, for stamping stills with their pointing direction.
+    // Game rotation vector rather than the magnetometer-fused one: no compass jumps from
+    // local iron, and a panorama stitch only needs RELATIVE orientation between shots.
+    private volatile float[] mLastOrientation = null;
+    private volatile long mLastOrientationTs = 0;
     // Idle cap on the sync deques, ~1 s at 200 Hz. Keeps memory bounded while the app
     // sits open and bounds how stale the head of the queue can be at record start.
     private static final int IDLE_QUEUE_CAP = 200;
@@ -177,6 +182,30 @@ public class IMUManager extends SensorEventCallback {
         }
 
         return data;
+    }
+
+    /** Latest game-rotation-vector sample as (x, y, z, w), or null if none yet. */
+    public float[] getLatestOrientation() {
+        float[] v = mLastOrientation;
+        if (v == null) {
+            return null;
+        }
+        float[] q = new float[4];
+        q[0] = v[0];
+        q[1] = v[1];
+        q[2] = v[2];
+        // The 4th element is only present on some devices; derive it when absent.
+        if (v.length >= 4) {
+            q[3] = v[3];
+        } else {
+            float sq = 1.0f - v[0] * v[0] - v[1] * v[1] - v[2] * v[2];
+            q[3] = sq > 0 ? (float) Math.sqrt(sq) : 0f;
+        }
+        return q;
+    }
+
+    public long getLatestOrientationTimeNs() {
+        return mLastOrientationTs;
     }
 
     public Boolean sensorsExist() {
@@ -373,6 +402,14 @@ public class IMUManager extends SensorEventCallback {
         } else if (event.sensor.getType() == MAG_TYPE) {
             SensorPacket sp = new SensorPacket(event.timestamp, event.values.clone());
             mMagData.add(sp);
+        } else if (event.sensor.getType() == Sensor.TYPE_GAME_ROTATION_VECTOR) {
+            // Cached regardless of recording state so a still taken outside a video
+            // recording still carries an orientation.
+            mLastOrientation = event.values.clone();
+            mLastOrientationTs = event.timestamp;
+            if (mRecordingInertialData) {
+                writeAuxData(event);
+            }
         } else if (event.sensor.getType() == Sensor.TYPE_STEP_COUNTER) {
             // Cache regardless of recording state — see mLastStepCount.
             mLastStepCount = event.values[0];
