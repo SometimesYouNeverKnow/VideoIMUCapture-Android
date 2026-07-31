@@ -140,8 +140,6 @@ public class Camera2Proxy {
             Log.d(TAG, "Video size " + videoSize.toString() +
                     " preview size " + mPreviewSize.toString());
 
-            logAnalyticsConfig();
-
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
@@ -516,6 +514,16 @@ public class Camera2Proxy {
             frameBuilder.setFocusDistanceDiopters(fDist);
         }
 
+        // Crop region in active-array coordinates: if it moves frame to frame, EIS is on.
+        Rect crop = result.get(CaptureResult.SCALER_CROP_REGION);
+        if (crop != null) {
+            frameBuilder.setCropRegion(RecordingProtos.VideoFrameMetaData.Rect.newBuilder()
+                    .setLeft(crop.left)
+                    .setTop(crop.top)
+                    .setRight(crop.right)
+                    .setBottom(crop.bottom));
+        }
+
         if (Build.VERSION.SDK_INT >= 28) {
             OisSample[] oisSamples = result.get(CaptureResult.STATISTICS_OIS_SAMPLES);
             if (oisSamples != null) {
@@ -533,66 +541,6 @@ public class Camera2Proxy {
 
         mRecordingWriter.queueData(frameBuilder.build());
 
-    }
-
-    private void logAnalyticsConfig() {
-        Context context = mActivity;
-        SharedPreferences sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context);
-        int versionCode = BuildConfig.VERSION_CODE;
-        String CAMERA_CONFIG_VERSION_SENT = "CAMERA_CONFIG_VERSION_SENT";
-        if (sharedPreferences.getInt(CAMERA_CONFIG_VERSION_SENT, 0) == versionCode) {
-            Log.d(TAG, "logAnalyticsConfig already sent for this version: " + versionCode);
-            return;
-        }
-        Log.d(TAG, "logAnalyticsConfig");
-        Bundle params = new Bundle();
-        params.putString("camera_id", mCameraIdStr);
-        params.putString("manufacturer", Build.MANUFACTURER);
-        params.putString("model", Build.MODEL);
-        params.putString("sw_version", String.valueOf(Build.VERSION.SDK_INT));
-        params.putString("sw_release", Build.VERSION.RELEASE);
-
-        int camFacing = mCameraCharacteristics.get(CameraCharacteristics.LENS_FACING);
-        params.putString("LENS_FACING", String.valueOf(camFacing));
-
-        int [] camCap = mCameraCharacteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
-        params.putString("REQUEST_AVAILABLE_CAPABILITIES", Arrays.toString(camCap));
-
-        Integer hwLevel = mCameraCharacteristics.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL);
-        params.putString("INFO_SUPPORTED_HARDWARE_LEVEL", String.valueOf(hwLevel));
-
-        int[] oisModes = mCameraCharacteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION);
-        params.putString("AVAILABLE_OPTICAL_STABILIZATION", Arrays.toString(oisModes));
-
-        int[] stabilizationModes = mCameraCharacteristics.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES);
-        params.putString("AVAILABLE_VIDEO_STABILIZATION_MODES", Arrays.toString(stabilizationModes));
-
-        Integer calibQuality = mCameraCharacteristics.get(CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION);
-        params.putString("LENS_INFO_FOCUS_DISTANCE_CALIBRATION", String.valueOf(calibQuality));
-
-        float[] intrinsicC = mCameraCharacteristics.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION);
-        params.putString("LENS_INTRINSIC_CALIBRATION", Arrays.toString(intrinsicC));
-
-        float[] RadialD = mCameraCharacteristics.get(CameraCharacteristics.LENS_RADIAL_DISTORTION);
-        params.putString("LENS_RADIAL_DISTORTION", Arrays.toString(RadialD));
-
-        if (Build.VERSION.SDK_INT >= 28) {
-            int[] oisDataModes = mCameraCharacteristics.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_OIS_DATA_MODES);
-            params.putString("STATISTICS_INFO_AVAILABLE_OIS_DATA_MODES", Arrays.toString(oisDataModes));
-
-            Integer poseRef = mCameraCharacteristics.get(CameraCharacteristics.LENS_POSE_REFERENCE);
-            params.putString("LENS_POSE_REFERENCE", String.valueOf(poseRef));
-
-            float [] poseT = mCameraCharacteristics.get(CameraCharacteristics.LENS_POSE_TRANSLATION);
-            params.putString("LENS_POSE_TRANSLATION", Arrays.toString(poseT));
-
-            float [] poseR = mCameraCharacteristics.get(CameraCharacteristics.LENS_POSE_ROTATION);
-            params.putString("LENS_POSE_ROTATION", Arrays.toString(poseR));
-        }
-
-        ((CameraCaptureActivity) mActivity).getmFirebaseAnalytics().logEvent("camera_config", params);
-        sharedPreferences.edit().putInt(CAMERA_CONFIG_VERSION_SENT, versionCode).apply();
-        Log.d(TAG, "Setting logAnalyticsConfig version to: " + versionCode);
     }
 
     private void startBackgroundThread() {

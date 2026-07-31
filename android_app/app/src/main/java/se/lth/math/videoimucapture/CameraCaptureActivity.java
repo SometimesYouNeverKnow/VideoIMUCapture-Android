@@ -20,6 +20,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
 
+import android.content.Context;
 import android.graphics.SurfaceTexture;
 import android.os.Bundle;
 import android.os.Handler;
@@ -34,7 +35,6 @@ import android.view.View;
 import android.view.ViewGroup;
 
 import com.google.android.material.appbar.MaterialToolbar;
-import com.google.firebase.analytics.FirebaseAnalytics;
 
 import java.lang.ref.WeakReference;
 
@@ -124,11 +124,10 @@ public class CameraCaptureActivity extends AppCompatActivity {
     private PermissionRationaleFragment mPermissionFragment = null;
     private CameraSettingsManager mCameraSettingsManager;
 
-    private FirebaseAnalytics mFirebaseAnalytics;
-
     // this is static so it survives activity restarts
     private static TextureMovieEncoder sVideoEncoder = new TextureMovieEncoder();
     private static IMUManager mImuManager;
+    private static GnssLogger mGnssLogger;
     private static RecordingWriter sRecordingWriter = new RecordingWriter();
 
     public CameraSettingsManager getmCameraSettingsManager() {
@@ -149,10 +148,12 @@ public class CameraCaptureActivity extends AppCompatActivity {
     public IMUManager getmImuManager() {
         return mImuManager;
     }
+    public GnssLogger getmGnssLogger() {
+        return mGnssLogger;
+    }
     public Camera2Proxy getmCamera2Proxy() {
         return mCamera2Proxy;
     }
-    public FirebaseAnalytics getmFirebaseAnalytics() { return mFirebaseAnalytics; }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -166,9 +167,11 @@ public class CameraCaptureActivity extends AppCompatActivity {
         mCameraSettingsManager = new CameraSettingsManager(this);
 
         mImuManager = new IMUManager(this);
+        mGnssLogger = new GnssLogger(this);
 
-        // Obtain the FirebaseAnalytics instance.
-        mFirebaseAnalytics = FirebaseAnalytics.getInstance(this);
+        // Dump the per-device camera census (diagnostics, off the UI thread).
+        final Context appContext = getApplicationContext();
+        new Thread(() -> CameraCensus.writeCensus(appContext), "CameraCensus").start();
 
         if (savedInstanceState == null) {
             ToolBarFragment fragment = new ToolBarFragment();
@@ -261,6 +264,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
         }
 
         mImuManager.register();
+        mGnssLogger.register(this);
         Log.d(TAG, "onResume complete: " + this);
     }
 
@@ -289,6 +293,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
 
 
         mImuManager.unregister();
+        mGnssLogger.unregister();
         Log.d(TAG, "onPause complete");
     }
 

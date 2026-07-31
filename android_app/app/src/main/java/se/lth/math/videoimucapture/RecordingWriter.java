@@ -16,6 +16,10 @@ import se.lth.math.videoimucapture.RecordingProtos.VideoFrameToTimestamp;
 import se.lth.math.videoimucapture.RecordingProtos.IMUData;
 import se.lth.math.videoimucapture.RecordingProtos.IMUInfo;
 import se.lth.math.videoimucapture.RecordingProtos.CameraInfo;
+import se.lth.math.videoimucapture.RecordingProtos.EnvironmentData;
+import se.lth.math.videoimucapture.RecordingProtos.StepData;
+import se.lth.math.videoimucapture.RecordingProtos.OrientationData;
+import se.lth.math.videoimucapture.RecordingProtos.GnssData;
 import se.lth.math.videoimucapture.RecordingProtos.MessageWrapper;
 
 import static java.lang.Math.abs;
@@ -131,6 +135,26 @@ public class RecordingWriter implements Runnable{
                 VideoCaptureData.newBuilder().mergeCameraMeta(msg.getCameraMeta())
                         .build().writeTo(mFileStream);
                 break;
+            case ENVIRONMENT_DATA:
+                if (VERBOSE) Log.d(TAG,"Got Environment data");
+                VideoCaptureData.newBuilder().addEnvironment(msg.getEnvironmentData())
+                        .build().writeTo(mFileStream);
+                break;
+            case STEP_DATA:
+                if (VERBOSE) Log.d(TAG,"Got Step data");
+                VideoCaptureData.newBuilder().addSteps(msg.getStepData())
+                        .build().writeTo(mFileStream);
+                break;
+            case ORIENTATION_DATA:
+                if (VERBOSE) Log.d(TAG,"Got Orientation data");
+                VideoCaptureData.newBuilder().addOrientation(msg.getOrientationData())
+                        .build().writeTo(mFileStream);
+                break;
+            case GNSS_DATA:
+                if (VERBOSE) Log.d(TAG,"Got GNSS data");
+                VideoCaptureData.newBuilder().addGnss(msg.getGnssData())
+                        .build().writeTo(mFileStream);
+                break;
         }
     }
 
@@ -196,6 +220,18 @@ public class RecordingWriter implements Runnable{
     }
     public void queueData(CameraInfo msg) {
         queueData(MessageWrapper.newBuilder().setCameraMeta(msg).build());
+    }
+    public void queueData(EnvironmentData msg) {
+        queueData(MessageWrapper.newBuilder().setEnvironmentData(msg).build());
+    }
+    public void queueData(StepData msg) {
+        queueData(MessageWrapper.newBuilder().setStepData(msg).build());
+    }
+    public void queueData(OrientationData msg) {
+        queueData(MessageWrapper.newBuilder().setOrientationData(msg).build());
+    }
+    public void queueData(GnssData msg) {
+        queueData(MessageWrapper.newBuilder().setGnssData(msg).build());
     }
 
 }

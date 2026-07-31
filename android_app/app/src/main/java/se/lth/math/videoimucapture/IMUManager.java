@@ -28,7 +28,8 @@ public class IMUManager extends SensorEventCallback {
     // [t-x, t+x] of the gyro data at t, then the original acceleration data
     // is used instead of linear interpolation
     private final long mInterpolationTimeResolution = 500; // nanoseconds
-    private final int mSensorRate = 10000; //Us, 100Hz
+    private final int mSensorRate = 5000; //Us, 200Hz (HIGH_SAMPLING_RATE_SENSORS declared)
+    private final int mDerivedRate = 10000; //Us, 100Hz for OS-fused orientation streams
     private long mEstimatedSensorRate = 0; // ns
     private long mPrevTimestamp = 0; // ns
     private float[] mSensorPlacement = null;
@@ -63,6 +64,16 @@ public class IMUManager extends SensorEventCallback {
     private Sensor mGyro;
     private Sensor mMag;
 
+    // Auxiliary sensors (all optional — recording works without them).
+    private Sensor mPressure;
+    private Sensor mStepCounter;
+    private Sensor mStepDetector;
+    private Sensor mRotVec;
+    private Sensor mGameRotVec;
+    private Sensor mGeoRotVec;
+
+    private final Context mAppContext;
+
     private int linear_acc; // accuracy
     private int angular_acc;
     private int mag_acc;
@@ -77,11 +88,28 @@ public class IMUManager extends SensorEventCallback {
 
     public IMUManager(Activity activity) {
         super();
+        mAppContext = activity.getApplicationContext();
         mSensorManager = (SensorManager) activity.getSystemService(Context.SENSOR_SERVICE);
         setSensorType();
         mAccel = mSensorManager.getDefaultSensor(ACC_TYPE);
         mGyro = mSensorManager.getDefaultSensor(GYRO_TYPE);
         mMag = mSensorManager.getDefaultSensor(MAG_TYPE);
+
+        mPressure = mSensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE);
+        mStepCounter = mSensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER);
+        mStepDetector = mSensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR);
+        mRotVec = mSensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        mGameRotVec = mSensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+        mGeoRotVec = mSensorManager.getDefaultSensor(Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR);
+    }
+
+    private boolean hasStepPermission() {
+        // ACTIVITY_RECOGNITION became a runtime permission in API 29.
+        if (Build.VERSION.SDK_INT < 29) {
+            return true;
+        }
+        return mAppContext.checkSelfPermission(android.Manifest.permission.ACTIVITY_RECOGNITION)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
     }
 
     private void setSensorType() {
@@ -248,6 +276,9 @@ public class IMUManager extends SensorEventCallback {
         if (mMag != null) {
             builder.setMagInfo(mMag.toString()).setMagResolution(mMag.getResolution());
         }
+        if (mPressure != null) {
+            builder.setPressureInfo(mPressure.toString()).setPressureResolution(mPressure.getResolution());
+        }
         builder.setSampleFrequency(getSensorFrequency());
 
         //Store translation for sensor placement in device coordinate system.
@@ -289,6 +320,49 @@ public class IMUManager extends SensorEventCallback {
         } else if (event.sensor.getType() == MAG_TYPE) {
             SensorPacket sp = new SensorPacket(event.timestamp, event.values);
             mMagData.add(sp);
+        } else if (mRecordingInertialData) {
+            // Auxiliary sensors: no interpolation against the gyro clock — each sample is
+            // written as its own message with its own hardware timestamp.
+            writeAuxData(event);
+        }
+    }
+
+    private void writeAuxData(SensorEvent event) {
+        switch (event.sensor.getType()) {
+            case Sensor.TYPE_PRESSURE:
+                mRecordingWriter.queueData(RecordingProtos.EnvironmentData.newBuilder()
+                        .setTimeNs(event.timestamp)
+                        .setPressureHpa(event.values[0])
+                        .build());
+                break;
+            case Sensor.TYPE_STEP_COUNTER:
+                mRecordingWriter.queueData(RecordingProtos.StepData.newBuilder()
+                        .setTimeNs(event.timestamp)
+                        .setCounter((long) event.values[0])
+                        .setDetectorEvent(false)
+                        .build());
+                break;
+            case Sensor.TYPE_STEP_DETECTOR:
+                mRecordingWriter.queueData(RecordingProtos.StepData.newBuilder()
+                        .setTimeNs(event.timestamp)
+                        .setCounter(-1)
+                        .setDetectorEvent(true)
+                        .build());
+                break;
+            case Sensor.TYPE_ROTATION_VECTOR:
+            case Sensor.TYPE_GAME_ROTATION_VECTOR:
+            case Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR:
+                RecordingProtos.OrientationData.Builder builder =
+                        RecordingProtos.OrientationData.newBuilder()
+                                .setTimeNs(event.timestamp)
+                                .setSensorType(event.sensor.getType())
+                                .setHeadingAccuracyRad(
+                                        event.values.length >= 5 ? event.values[4] : -1f);
+                for (int i = 0; i < Math.min(4, event.values.length); i++) {
+                    builder.addQuaternion(event.values[i]);
+                }
+                mRecordingWriter.queueData(builder.build());
+                break;
         }
     }
 
@@ -318,6 +392,29 @@ public class IMUManager extends SensorEventCallback {
         mSensorManager.registerListener(this, mAccel, mSensorRate, sensorHandler);
         mSensorManager.registerListener(this, mGyro, mSensorRate, sensorHandler);
         mSensorManager.registerListener(this, mMag, mSensorRate, sensorHandler);
+
+        // Auxiliary sensors — every one is optional.
+        if (mPressure != null) {
+            // Request fastest; barometers cap themselves at their hardware rate (~25 Hz).
+            mSensorManager.registerListener(this, mPressure, SensorManager.SENSOR_DELAY_FASTEST, sensorHandler);
+        }
+        if (hasStepPermission()) {
+            if (mStepCounter != null) {
+                mSensorManager.registerListener(this, mStepCounter, SensorManager.SENSOR_DELAY_NORMAL, sensorHandler);
+            }
+            if (mStepDetector != null) {
+                mSensorManager.registerListener(this, mStepDetector, SensorManager.SENSOR_DELAY_NORMAL, sensorHandler);
+            }
+        }
+        if (mRotVec != null) {
+            mSensorManager.registerListener(this, mRotVec, mDerivedRate, sensorHandler);
+        }
+        if (mGameRotVec != null) {
+            mSensorManager.registerListener(this, mGameRotVec, mDerivedRate, sensorHandler);
+        }
+        if (mGeoRotVec != null) {
+            mSensorManager.registerListener(this, mGeoRotVec, mDerivedRate, sensorHandler);
+        }
     }
 
     /**

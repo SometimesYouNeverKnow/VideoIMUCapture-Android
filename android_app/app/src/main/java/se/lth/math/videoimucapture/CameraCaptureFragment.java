@@ -300,6 +300,7 @@ public class CameraCaptureFragment extends Fragment
 
         mRenderer.resetOutputFiles(outputFile, recordingWriter); // this will not cause sync issues
         getmImuManager().startRecording(recordingWriter);
+        ((CameraCaptureActivity) getActivity()).getmGnssLogger().startRecording(recordingWriter);
 
         if (camera2Proxy != null) {
             camera2Proxy.startRecordingCaptureResult(recordingWriter);
@@ -322,6 +323,7 @@ public class CameraCaptureFragment extends Fragment
             camera2Proxy.stopRecordingCaptureResult();
         }
         getmImuManager().stopRecording();
+        ((CameraCaptureActivity) getActivity()).getmGnssLogger().stopRecording();
 
         mGLView.queueEvent(new Runnable() {
             @Override

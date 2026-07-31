@@ -22,13 +22,20 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.provider.Settings;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import java.util.ArrayList;
+
 /**
  * Helper class for handling dangerous permissions for Android API level >= 23 which
  * requires user consent at runtime to access the camera.
+ *
+ * CAMERA is the only hard requirement. Location (GNSS track) and activity recognition
+ * (step counter) are requested in the same prompt but recording works without them —
+ * the corresponding streams are simply absent from the output.
  */
 class PermissionHelper {
     public static final int RC_PERMISSION_REQUEST = 9222;
@@ -43,8 +50,14 @@ class PermissionHelper {
     }
 
     public static void requestCameraPermission(Activity activity) {
-        String permissions[] = new String[]{Manifest.permission.CAMERA};
-        ActivityCompat.requestPermissions(activity, permissions, RC_PERMISSION_REQUEST);
+        ArrayList<String> permissions = new ArrayList<>();
+        permissions.add(Manifest.permission.CAMERA);
+        permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        if (Build.VERSION.SDK_INT >= 29) {
+            permissions.add(Manifest.permission.ACTIVITY_RECOGNITION);
+        }
+        ActivityCompat.requestPermissions(activity,
+                permissions.toArray(new String[0]), RC_PERMISSION_REQUEST);
     }
 
     /**

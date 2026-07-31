@@ -74,6 +74,59 @@ message VideoFrameMetaData {
   }
   repeated OISSample OIS_samples =10;
   bool focus_locked = 11;
+
+  // SCALER_CROP_REGION, in active-array coordinates. If this moves frame to frame,
+  // digital stabilization (EIS/VDIS) is warping the output — a per-frame EIS detector.
+  message Rect {
+    int32 left = 1;
+    int32 top = 2;
+    int32 right = 3;
+    int32 bottom = 4;
+  }
+  Rect crop_region = 12;
+}
+
+// Barometer sample. time_ns is the sensor event timestamp, same clock as IMUData.time_ns.
+message EnvironmentData {
+  int64 time_ns = 1;
+  float pressure_hpa = 2;
+}
+
+// Hardware step counter/detector. counter is cumulative since boot (TYPE_STEP_COUNTER);
+// -1 for detector-only events (TYPE_STEP_DETECTOR).
+message StepData {
+  int64 time_ns = 1;
+  int64 counter = 2;
+  bool detector_event = 3;
+}
+
+// OS-fused orientation estimate (rotation vector family). DERIVED, not a raw measurement —
+// recorded for cross-checks only, never as ground truth. sensor_type is the android
+// Sensor type id (11 = ROTATION_VECTOR, 15 = GAME_ROTATION_VECTOR, 20 = GEOMAGNETIC).
+message OrientationData {
+  int64 time_ns = 1;
+  repeated float quaternion = 2; // x, y, z, w as delivered by the sensor
+  int32 sensor_type = 3;
+  float heading_accuracy_rad = 4; // -1 if not reported
+}
+
+// GNSS fix from LocationManager (GPS provider, no fused black box).
+// elapsed_realtime_ns is on the same clock family as the sensor timestamps — that is the join.
+// altitude is WGS84 ellipsoid metres, NOT geoid/MSL: geoid separation is ~30 m in New England.
+message GnssData {
+  int64 elapsed_realtime_ns = 1;
+  int64 utc_time_ms = 2;
+  double latitude_deg = 3;
+  double longitude_deg = 4;
+  double altitude_wgs84_m = 5;
+  float horizontal_accuracy_m = 6;
+  float vertical_accuracy_m = 7;
+  float speed_mps = 8;
+  float bearing_deg = 9;
+  string provider = 10;
+  bool has_altitude = 11;
+  bool has_speed = 12;
+  bool has_bearing = 13;
 }
 
 message IMUInfo {
@@ -87,6 +140,10 @@ message IMUInfo {
   // added for magnetometer support
   string mag_info = 7;
   float mag_resolution = 8;
+
+  // added for barometer support
+  string pressure_info = 9;
+  float pressure_resolution = 10;
 }
 
 message IMUData {
@@ -117,6 +174,10 @@ message VideoCaptureData {
 
   repeated IMUData imu = 4;
   repeated VideoFrameMetaData video_meta = 5;
+  repeated EnvironmentData environment = 6;
+  repeated StepData steps = 7;
+  repeated OrientationData orientation = 8;
+  repeated GnssData gnss = 9;
 }
 
 message MessageWrapper {
@@ -126,5 +187,9 @@ message MessageWrapper {
     IMUInfo imu_meta = 3;
     VideoFrameMetaData frame_meta = 4;
     VideoFrameToTimestamp frame_time = 5;
+    EnvironmentData environment_data = 6;
+    StepData step_data = 7;
+    OrientationData orientation_data = 8;
+    GnssData gnss_data = 9;
   }
 }

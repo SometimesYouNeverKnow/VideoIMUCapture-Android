@@ -62,12 +62,13 @@ public class FloatSeekBarPreference extends SeekBarPreference implements SeekBar
     public void onBindViewHolder(PreferenceViewHolder view) {
         super.onBindViewHolder(view);
 
-        mSeekBar = (SeekBar) view.findViewById(R.id.seekbar);
+        // Non-transitive R classes (AGP 8): these ids live in the preference library's R.
+        mSeekBar = (SeekBar) view.findViewById(androidx.preference.R.id.seekbar);
         Float steps = (mMax - mMin)/mResolution;
         mSeekBar.setMax(steps.intValue());
         mSeekBar.setProgress(valueToProgress(getFloatValue()));
 
-        mTextView = (TextView) view.findViewById(R.id.seekbar_value);
+        mTextView = (TextView) view.findViewById(androidx.preference.R.id.seekbar_value);
         updateText(getFloatValue());
 
         mSeekBar.setOnSeekBarChangeListener(this);
