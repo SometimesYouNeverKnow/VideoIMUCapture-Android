@@ -82,6 +82,12 @@ public class IMUManager extends SensorEventCallback {
     private RecordingWriter mRecordingWriter = null;
     private HandlerThread mSensorThread;
     private Handler mSensorHandler;
+    // Step counter baseline: TYPE_STEP_COUNTER reports its cumulative value once at
+    // activation and then only on confirmed new steps — both can fall outside the
+    // recording window. Cache the latest continuously; write it as a baseline at
+    // record start so "steps during clip" is a diff, not a guess.
+    private volatile float mLastStepCount = -1;
+    private volatile long mLastStepCountTs = 0;
     // Idle cap on the sync deques, ~1 s at 200 Hz. Keeps memory bounded while the app
     // sits open and bounds how stale the head of the queue can be at record start.
     private static final int IDLE_QUEUE_CAP = 200;
@@ -190,6 +196,13 @@ public class IMUManager extends SensorEventCallback {
             mAccelData.clear();
             mMagData.clear();
             mRecordingInertialData = true;
+            if (mLastStepCount >= 0) {
+                mRecordingWriter.queueData(RecordingProtos.StepData.newBuilder()
+                        .setTimeNs(mLastStepCountTs)
+                        .setCounter((long) mLastStepCount)
+                        .setDetectorEvent(false)
+                        .build());
+            }
         };
         if (mSensorHandler != null) {
             mSensorHandler.post(startFresh);
@@ -360,6 +373,13 @@ public class IMUManager extends SensorEventCallback {
         } else if (event.sensor.getType() == MAG_TYPE) {
             SensorPacket sp = new SensorPacket(event.timestamp, event.values.clone());
             mMagData.add(sp);
+        } else if (event.sensor.getType() == Sensor.TYPE_STEP_COUNTER) {
+            // Cache regardless of recording state — see mLastStepCount.
+            mLastStepCount = event.values[0];
+            mLastStepCountTs = event.timestamp;
+            if (mRecordingInertialData) {
+                writeAuxData(event);
+            }
         } else if (mRecordingInertialData) {
             // Auxiliary sensors: no interpolation against the gyro clock — each sample is
             // written as its own message with its own hardware timestamp.
