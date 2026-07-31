@@ -1,12 +1,15 @@
 package se.lth.math.videoimucapture;
 
 import android.content.Context;
+import android.graphics.ImageFormat;
 import android.graphics.Rect;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.params.StreamConfigurationMap;
 import android.os.Build;
 import android.util.Log;
 import android.util.Range;
+import android.util.Size;
 import android.util.SizeF;
 
 import org.json.JSONArray;
@@ -149,7 +152,77 @@ public class CameraCensus {
             o.put("CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES", Arrays.toString(fpsRanges));
         }
 
+        // --- Stills / bracketing capability: what a tripod session could actually use. ---
+        Range<Long> expRange = ch.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
+        if (expRange != null) {
+            o.put("SENSOR_INFO_EXPOSURE_TIME_RANGE_ns", expRange.toString());
+        }
+        Range<Integer> isoRange = ch.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
+        if (isoRange != null) {
+            o.put("SENSOR_INFO_SENSITIVITY_RANGE", isoRange.toString());
+        }
+        putValue(o, "SENSOR_INFO_MAX_FRAME_DURATION",
+                ch.get(CameraCharacteristics.SENSOR_INFO_MAX_FRAME_DURATION));
+        Range<Integer> evRange = ch.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
+        if (evRange != null) {
+            o.put("CONTROL_AE_COMPENSATION_RANGE", evRange.toString());
+            o.put("CONTROL_AE_COMPENSATION_STEP",
+                    String.valueOf(ch.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)));
+        }
+        putValue(o, "REQUEST_MAX_NUM_OUTPUT_RAW",
+                ch.get(CameraCharacteristics.REQUEST_MAX_NUM_OUTPUT_RAW));
+        putValue(o, "SENSOR_INFO_WHITE_LEVEL", ch.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL));
+        putValue(o, "SENSOR_INFO_COLOR_FILTER_ARRANGEMENT",
+                ch.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT));
+
+        StreamConfigurationMap map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+        if (map != null) {
+            o.put("output_formats", formatSizes(map));
+        }
+        if (Build.VERSION.SDK_INT >= 31) {
+            StreamConfigurationMap maxRes =
+                    ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION);
+            if (maxRes != null) {
+                o.put("output_formats_MAX_RESOLUTION", formatSizes(maxRes));
+            }
+        }
+
         return o;
+    }
+
+    /** format name -> largest few output sizes, so "can it shoot RAW, and how big" is one look. */
+    private static JSONObject formatSizes(StreamConfigurationMap map) throws JSONException {
+        JSONObject out = new JSONObject();
+        for (int fmt : map.getOutputFormats()) {
+            Size[] sizes = map.getOutputSizes(fmt);
+            if (sizes == null || sizes.length == 0) {
+                continue;
+            }
+            Arrays.sort(sizes, (a, b) ->
+                    Long.compare((long) b.getWidth() * b.getHeight(), (long) a.getWidth() * a.getHeight()));
+            JSONArray ja = new JSONArray();
+            for (int i = 0; i < Math.min(3, sizes.length); i++) {
+                ja.put(sizes[i].toString());
+            }
+            out.put(formatName(fmt) + " (" + sizes.length + " sizes)", ja);
+        }
+        return out;
+    }
+
+    private static String formatName(int fmt) {
+        switch (fmt) {
+            case ImageFormat.JPEG: return "JPEG";
+            case ImageFormat.RAW_SENSOR: return "RAW_SENSOR";
+            case ImageFormat.RAW10: return "RAW10";
+            case ImageFormat.RAW12: return "RAW12";
+            case ImageFormat.YUV_420_888: return "YUV_420_888";
+            case ImageFormat.PRIVATE: return "PRIVATE";
+            case ImageFormat.HEIC: return "HEIC";
+            case ImageFormat.DEPTH16: return "DEPTH16";
+            case ImageFormat.DEPTH_JPEG: return "DEPTH_JPEG";
+            case ImageFormat.YCBCR_P010: return "YCBCR_P010(10-bit)";
+            default: return "format_0x" + Integer.toHexString(fmt);
+        }
     }
 
     private static void putValue(JSONObject o, String key, Object value) throws JSONException {
