@@ -302,13 +302,15 @@ public class IMUManager extends SensorEventCallback {
 
     @Override
     public final void onSensorChanged(SensorEvent event) {
+        // event.values must be cloned: the framework may pool and reuse the event object,
+        // and these packets sit in deques until the interpolation pass reads them.
         if (event.sensor.getType() == ACC_TYPE) {
-            SensorPacket sp = new SensorPacket(event.timestamp, event.values);
+            SensorPacket sp = new SensorPacket(event.timestamp, event.values.clone());
             mAccelData.add(sp);
 
             updateSensorRate(event);
         } else if (event.sensor.getType() == GYRO_TYPE) {
-            SensorPacket sp = new SensorPacket(event.timestamp, event.values);
+            SensorPacket sp = new SensorPacket(event.timestamp, event.values.clone());
             mGyroData.add(sp);
 
             // sync data
@@ -318,7 +320,7 @@ public class IMUManager extends SensorEventCallback {
                     writeData(syncedData);
             }
         } else if (event.sensor.getType() == MAG_TYPE) {
-            SensorPacket sp = new SensorPacket(event.timestamp, event.values);
+            SensorPacket sp = new SensorPacket(event.timestamp, event.values.clone());
             mMagData.add(sp);
         } else if (mRecordingInertialData) {
             // Auxiliary sensors: no interpolation against the gyro clock — each sample is

@@ -29,7 +29,10 @@ public class RecordingWriter implements Runnable{
     final private Boolean VERBOSE = false;
 
     private FileOutputStream mFileStream;
-    private BlockingQueue<MessageWrapper> mQueue = new ArrayBlockingQueue<>(1000);
+    // Sized for the full sensor suite (~530 msg/s: 200 Hz IMU + 3x100 Hz rotation vectors
+    // + barometer + steps + GNSS). queueData() blocks the sensor thread when full, so
+    // headroom here is what keeps a slow filesystem moment from stalling capture.
+    private BlockingQueue<MessageWrapper> mQueue = new ArrayBlockingQueue<>(8192);
     //Empty message as poison pill
     private final MessageWrapper mPoisonPill = MessageWrapper.newBuilder().build();
 

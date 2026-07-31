@@ -1,6 +1,14 @@
 # VideoIMUCapture-Android
 Android application for capturing video and IMU data useful for 3D reconstruction using SLAM and Structure from Motion techniques.
 
+> ## This fork (2026)
+> Modernized and extended from [DavidGillsjo/VideoIMUCapture-Android](https://github.com/DavidGillsjo/VideoIMUCapture-Android) (upstream last released 2021):
+> - **Builds on current tooling** — Gradle 8.7, AGP 8.5.2, JDK 17, compileSdk/targetSdk 34, protobuf 3.25.
+> - **Firebase removed entirely.** Nothing leaves the device. The old analytics camera dump is reborn as `camera_census.json` in the app files directory — every camera's characteristics (stabilization modes, OIS data support, calibration tiers, timestamp source, physical lens ids) written locally on each launch.
+> - **More sensors recorded** (all optional, absent permission = absent stream, proto changes are field-number additive so old tooling still parses new files):
+>   barometer, hardware step counter/detector, rotation-vector family (tagged OS-fused), 1 Hz GPS track with `elapsedRealtimeNanos` (same clock family as the IMU), and per-frame `SCALER_CROP_REGION` — a per-frame EIS detector.
+> - IMU rate 100 Hz → 200 Hz; sensor values cloned (the framework may pool event objects); writer queue sized for the full suite.
+
 
 <img src="images/Capture.png" width="33%" border="1" ><img src="images/Settings.png" width="33%" border="1" ><img src="images/Warning_small.png" width="33%" border="1" >
 
