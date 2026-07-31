@@ -81,6 +81,10 @@ public class IMUManager extends SensorEventCallback {
     private volatile boolean mRecordingInertialData = false;
     private RecordingWriter mRecordingWriter = null;
     private HandlerThread mSensorThread;
+    private Handler mSensorHandler;
+    // Idle cap on the sync deques, ~1 s at 200 Hz. Keeps memory bounded while the app
+    // sits open and bounds how stale the head of the queue can be at record start.
+    private static final int IDLE_QUEUE_CAP = 200;
 
     private Deque<SensorPacket> mGyroData = new ArrayDeque<>();
     private Deque<SensorPacket> mAccelData = new ArrayDeque<>();
@@ -176,7 +180,22 @@ public class IMUManager extends SensorEventCallback {
     public void startRecording(RecordingWriter recordingWriter) {
         mRecordingWriter = recordingWriter;
         writeMetaData();
-        mRecordingInertialData = true;
+        // Drop the pre-recording backlog ON THE SENSOR THREAD (the deques are only ever
+        // touched there). The deques fill from register() at app resume but are only
+        // drained while recording — without this clear, the file starts with samples
+        // as old as the app session. Measured on the first S24 Ultra test clip:
+        // IMU lagged the video frames by 66 s.
+        Runnable startFresh = () -> {
+            mGyroData.clear();
+            mAccelData.clear();
+            mMagData.clear();
+            mRecordingInertialData = true;
+        };
+        if (mSensorHandler != null) {
+            mSensorHandler.post(startFresh);
+        } else {
+            startFresh.run();
+        }
     }
 
     public void stopRecording() {
@@ -290,6 +309,20 @@ public class IMUManager extends SensorEventCallback {
         mRecordingWriter.queueData(builder.build());
     }
 
+    private void trimIdleQueues() {
+        // Runs on the sensor thread only. While not recording, keep the deques small:
+        // unbounded growth here was both a memory leak and the source of stale samples.
+        while (mGyroData.size() > IDLE_QUEUE_CAP) {
+            mGyroData.removeFirst();
+        }
+        while (mAccelData.size() > IDLE_QUEUE_CAP) {
+            mAccelData.removeFirst();
+        }
+        while (mMagData.size() > IDLE_QUEUE_CAP) {
+            mMagData.removeFirst();
+        }
+    }
+
     private void updateSensorRate(SensorEvent event) {
         long diff = event.timestamp - mPrevTimestamp;
         mEstimatedSensorRate += (diff - mEstimatedSensorRate) >> 3;
@@ -313,11 +346,16 @@ public class IMUManager extends SensorEventCallback {
             SensorPacket sp = new SensorPacket(event.timestamp, event.values.clone());
             mGyroData.add(sp);
 
-            // sync data
+            // sync data — drain until caught up, not one packet per event, so a
+            // transient stall can never turn into a permanent lag.
             if (mRecordingInertialData) {
                 SyncedSensorPacket syncedData = syncInertialData();
-                if (syncedData != null)
+                while (syncedData != null) {
                     writeData(syncedData);
+                    syncedData = syncInertialData();
+                }
+            } else {
+                trimIdleQueues();
             }
         } else if (event.sensor.getType() == MAG_TYPE) {
             SensorPacket sp = new SensorPacket(event.timestamp, event.values.clone());
@@ -391,6 +429,7 @@ public class IMUManager extends SensorEventCallback {
         mSensorThread.start();
         // Blocks until looper is prepared, which is fairly quick
         Handler sensorHandler = new Handler(mSensorThread.getLooper());
+        mSensorHandler = sensorHandler;
         mSensorManager.registerListener(this, mAccel, mSensorRate, sensorHandler);
         mSensorManager.registerListener(this, mGyro, mSensorRate, sensorHandler);
         mSensorManager.registerListener(this, mMag, mSensorRate, sensorHandler);
@@ -430,6 +469,7 @@ public class IMUManager extends SensorEventCallback {
         mSensorManager.unregisterListener(this, mGyro);
         mSensorManager.unregisterListener(this, mMag);
         mSensorManager.unregisterListener(this);
+        mSensorHandler = null;
         mSensorThread.quitSafely();
         stopRecording();
     }
