@@ -19,6 +19,7 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 
 /**
@@ -50,11 +51,37 @@ public class CameraCensus {
             root.put("build_fingerprint", Build.FINGERPRINT);
             root.put("app_version", appVersion(context));
 
+            // Which cameras may be STREAMED AT THE SAME TIME. This is the question behind
+            // "can we get a stereo pair from two lenses" — a non-empty set here means the
+            // framework will allow two simultaneous sessions with a fixed baseline.
+            if (Build.VERSION.SDK_INT >= 30) {
+                JSONArray concurrent = new JSONArray();
+                for (java.util.Set<String> combo : manager.getConcurrentCameraIds()) {
+                    concurrent.put(new JSONArray(new ArrayList<>(combo)));
+                }
+                root.put("concurrent_camera_id_sets", concurrent);
+            }
+
             JSONObject cameras = new JSONObject();
+            java.util.LinkedHashSet<String> allIds = new java.util.LinkedHashSet<>(
+                    Arrays.asList(manager.getCameraIdList()));
+            // Physical sub-cameras of a logical camera are NOT in getCameraIdList() but can
+            // still be interrogated, and on this device that is where the telephotos live.
             for (String id : manager.getCameraIdList()) {
-                cameras.put(id, cameraJson(manager.getCameraCharacteristics(id)));
+                if (Build.VERSION.SDK_INT >= 28) {
+                    allIds.addAll(manager.getCameraCharacteristics(id).getPhysicalCameraIds());
+                }
+            }
+            for (String id : allIds) {
+                JSONObject cam = cameraJson(manager.getCameraCharacteristics(id));
+                cam.put("in_getCameraIdList",
+                        Arrays.asList(manager.getCameraIdList()).contains(id));
+                cameras.put(id, cam);
             }
             root.put("cameras", cameras);
+
+            // Vendor keys: anything Samsung exposes beyond the AOSP surface.
+            root.put("vendor_keys", vendorKeys(manager));
 
             File out = new File(context.getExternalFilesDir(null), CENSUS_FILE);
             try (FileOutputStream stream = new FileOutputStream(out)) {
@@ -65,6 +92,51 @@ public class CameraCensus {
             // The census is diagnostics, never worth crashing a capture app over.
             Log.e(TAG, "Failed to write camera census: " + e);
         }
+    }
+
+    /**
+     * Every CameraCharacteristics key whose name is not an AOSP "android.*" key — i.e.
+     * OEM vendor tags. Worth recording verbatim: capabilities the stock camera app uses
+     * often surface here even when the standard capability flags say no.
+     */
+    private static JSONObject vendorKeys(CameraManager manager) throws Exception {
+        JSONObject out = new JSONObject();
+        for (String id : manager.getCameraIdList()) {
+            CameraCharacteristics ch = manager.getCameraCharacteristics(id);
+            JSONArray keys = new JSONArray();
+            for (CameraCharacteristics.Key<?> k : ch.getKeys()) {
+                if (!k.getName().startsWith("android.")) {
+                    Object v = null;
+                    try {
+                        v = ch.get(k);
+                    } catch (Exception ignored) {
+                        // Some vendor keys throw on read; the NAME is still the finding.
+                    }
+                    String rendered;
+                    if (v == null) {
+                        rendered = "null";
+                    } else if (v instanceof int[]) {
+                        rendered = Arrays.toString((int[]) v);
+                    } else if (v instanceof float[]) {
+                        rendered = Arrays.toString((float[]) v);
+                    } else if (v instanceof byte[]) {
+                        rendered = "byte[" + ((byte[]) v).length + "]";
+                    } else if (v instanceof long[]) {
+                        rendered = Arrays.toString((long[]) v);
+                    } else {
+                        rendered = String.valueOf(v);
+                    }
+                    if (rendered.length() > 160) {
+                        rendered = rendered.substring(0, 160) + "...";
+                    }
+                    keys.put(k.getName() + " = " + rendered);
+                }
+            }
+            if (keys.length() > 0) {
+                out.put(id, keys);
+            }
+        }
+        return out;
     }
 
     private static String appVersion(Context context) {

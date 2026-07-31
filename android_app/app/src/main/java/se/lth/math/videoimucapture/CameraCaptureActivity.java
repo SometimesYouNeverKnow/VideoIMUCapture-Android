@@ -169,10 +169,6 @@ public class CameraCaptureActivity extends AppCompatActivity {
         mImuManager = new IMUManager(this);
         mGnssLogger = new GnssLogger(this);
 
-        // Dump the per-device camera census (diagnostics, off the UI thread).
-        final Context appContext = getApplicationContext();
-        new Thread(() -> CameraCensus.writeCensus(appContext), "CameraCensus").start();
-
         if (savedInstanceState == null) {
             ToolBarFragment fragment = new ToolBarFragment();
             getSupportFragmentManager()
@@ -265,6 +261,16 @@ public class CameraCaptureActivity extends AppCompatActivity {
 
         mImuManager.register();
         mGnssLogger.register(this);
+
+        // Census AFTER the camera permission exists, not in onCreate. Without the
+        // permission the framework returns a REDUCED CameraCharacteristics set —
+        // LENS_INTRINSIC_CALIBRATION, LENS_DISTORTION and LENS_POSE_TRANSLATION are all
+        // absent — and a census written then reports "device does not publish factory
+        // calibration" when in fact it does. Measured on SM-S928U 2026-07-31.
+        if (PermissionHelper.hasCameraPermission(this)) {
+            final Context appContext = getApplicationContext();
+            new Thread(() -> CameraCensus.writeCensus(appContext), "CameraCensus").start();
+        }
         Log.d(TAG, "onResume complete: " + this);
     }
 
