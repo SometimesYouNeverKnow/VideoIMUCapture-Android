@@ -94,12 +94,41 @@ public class Camera2Proxy {
     public void startRecordingCaptureResult(RecordingWriter recordingWriter) {
         mRecordingWriter = recordingWriter;
         mRecordingMetadata = true;
+        setAutoAlgorithmLock(true);
         writeCameraInfo();
     }
 
     public void stopRecordingCaptureResult() {
         if (mRecordingMetadata) {
             mRecordingMetadata = false;
+        }
+        setAutoAlgorithmLock(false);
+    }
+
+    /**
+     * Freeze the auto exposure and auto white balance algorithms for the duration of a
+     * recording: converge while framing, then hold.
+     *
+     * A drifting AE ramps global brightness mid-clip (measured on the 2026-07-31 test
+     * clips: ISO 93 -> 1529 within one 27 s recording) and a drifting AWB shifts colour;
+     * a splat then has to explain both as scene content. Locking is preferred over
+     * forcing manual values because it keeps the converged, correct exposure for
+     * whatever is actually in front of the camera.
+     *
+     * No-op when the user has selected fully manual AE — the locks are ignored then.
+     */
+    private void setAutoAlgorithmLock(boolean lock) {
+        if (mCaptureSession == null || mPreviewRequestBuilder == null) {
+            return;
+        }
+        try {
+            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_LOCK, lock);
+            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AWB_LOCK, lock);
+            mCaptureSession.setRepeatingRequest(
+                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+            Log.d(TAG, "AE/AWB lock " + (lock ? "engaged" : "released"));
+        } catch (CameraAccessException | IllegalStateException e) {
+            Log.w(TAG, "Could not change AE/AWB lock: " + e);
         }
     }
 
@@ -189,6 +218,12 @@ public class Camera2Proxy {
                     CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
             mPreviewRequestBuilder.set(
                     CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO);
+            // Chromatic aberration correction resamples the colour channels relative to one
+            // another — a per-channel geometric warp on top of the lens model the solve is
+            // trying to fit. Off, where the device allows it.
+            mPreviewRequestBuilder.set(
+                    CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE,
+                    CameraMetadata.COLOR_CORRECTION_ABERRATION_MODE_OFF);
 
             mCameraSettingsManager.updateRequestBuilder(mPreviewRequestBuilder);
 
