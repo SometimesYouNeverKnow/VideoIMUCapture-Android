@@ -251,19 +251,25 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
 
         // Sequenced rather than concurrent: each stage reconfigures the request, and a
         // burst must finish draining before the next changes focus or exposure under it.
+        //
+        // The focus stack is FIRST and gets the longest slot. It is the only stage that
+        // waits on hardware: each of its five slices parks the voice coil and waits for the
+        // lens to report it has arrived, up to 400 ms per step plus 120 ms of spacing. Five
+        // slices is therefore 2.6 s worst case against the 167 ms the burst version took —
+        // which is the whole reason that version came back with five identical pictures.
         notifyState(true, "OBJECT: focus stack");
-        proxy.captureStills(StillCaptureManager.Mode.FOCUS_STACK, 5, 0f, false, dir, writer);
+        proxy.captureFocusStack(5, false, dir, writer);
 
         mMain.postDelayed(() -> {
             notifyState(true, "OBJECT: exposure bracket");
             proxy.captureStills(StillCaptureManager.Mode.EXPOSURE_BRACKET, 5, 2.0f,
                     false, dir, writer);
-        }, 3000L);
+        }, 4000L);
 
         mMain.postDelayed(() -> {
             notifyState(true, "OBJECT: full-quality RAW");
             proxy.captureStills(StillCaptureManager.Mode.SINGLE, 1, 0f, true, dir, writer);
-        }, 6000L);
+        }, 7000L);
 
         // The stereo pair. Last, because it is the one stage whose value does not
         // degrade if the operator has already drifted — both frames are simultaneous,
@@ -276,7 +282,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             mMain.postDelayed(() -> {
                 notifyState(true, "OBJECT: stereo pair (metric scale)");
                 proxy.captureStereoPair(dir, writer);
-            }, 9000L);
+            }, 10000L);
         }
 
         mMain.postDelayed(() -> {
@@ -286,7 +292,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             }
             notifyState(false, hasStereo ? "OBJECT complete + stereo" : "OBJECT complete");
             Log.i(TAG, "object composite complete: " + dir);
-        }, hasStereo ? 14500L : 9500L);   // stereo adds a warm-up before its capture
+        }, hasStereo ? 15500L : 10500L);   // stereo adds a warm-up before its capture
     }
 
     private void notifyState(boolean running, String summary) {

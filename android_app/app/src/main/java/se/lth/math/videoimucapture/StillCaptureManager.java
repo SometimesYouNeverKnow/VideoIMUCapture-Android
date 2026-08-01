@@ -93,6 +93,10 @@ public class StillCaptureManager {
     }
 
     private final CameraCharacteristics mCharacteristics;
+    // Needed to read the PHYSICAL sensors' own characteristics: a logical camera's
+    // characteristics describe the logical camera, and the ultrawide's active array is not
+    // in there.
+    private final android.hardware.camera2.CameraManager mCameraManager;
     private final Handler mHandler;
     private final IMUManager mImuManager;
     // 0 = leave the device default alone. Otherwise 1..100, applied per request.
@@ -122,9 +126,11 @@ public class StillCaptureManager {
     private final Deque<PendingShot> mPendingRaw = new ArrayDeque<>();
     private int mShotCounter;
 
-    public StillCaptureManager(CameraCharacteristics characteristics, Handler handler,
-                               IMUManager imuManager) {
+    public StillCaptureManager(CameraCharacteristics characteristics,
+                               android.hardware.camera2.CameraManager cameraManager,
+                               Handler handler, IMUManager imuManager) {
         mCharacteristics = characteristics;
+        mCameraManager = cameraManager;
         mHandler = handler;
         mImuManager = imuManager;
         setupReaders();
@@ -221,7 +227,8 @@ public class StillCaptureManager {
         try {
             CaptureRequest.Builder b =
                     device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-            copyBase(baseRequest, b);
+            copyBase(baseRequest, b, false);
+            applyFullFieldOfView(b);
             b.addTarget(mStereoUwReader.getSurface());
             b.addTarget(mStereoMainReader.getSurface());
             session.capture(b.build(), mStereoCallback, mHandler);
@@ -344,6 +351,11 @@ public class StillCaptureManager {
         if (fd != null) {
             b.setFocusDistanceDiopters(fd);
         }
+        // The measurement this pair exists to settle: what the HAL read out of THIS sensor.
+        // Compare against the physical camera's own SENSOR_INFO_ACTIVE_ARRAY_SIZE in the
+        // census — 4000x3000 for the ultrawide, 4080x3060 for the main. Anything narrower
+        // is the crop that made the two frames match.
+        recordCrop(b, per, result);
         Integer flash = result.get(TotalCaptureResult.FLASH_MODE);
         b.setTorchOn(flash != null
                 && flash == android.hardware.camera2.CameraMetadata.FLASH_MODE_TORCH);
@@ -533,6 +545,10 @@ public class StillCaptureManager {
             Log.w(TAG, "capture requested with no session or no JPEG reader");
             return;
         }
+        if (mode == Mode.FOCUS_STACK && shots > 1) {
+            throw new IllegalArgumentException(
+                    "a focus stack cannot be a burst; use Camera2Proxy.captureFocusStack");
+        }
         mOutputDir = outputDir;
         mRecordingWriter = writer;
         mMode = mode;
@@ -573,8 +589,6 @@ public class StillCaptureManager {
             if (mMode == Mode.EXPOSURE_BRACKET && mBurstSize > 1) {
                 ev = -stops + 2f * stops * i / (mBurstSize - 1);
                 applyExposureOffset(b, lastResult, ev);
-            } else if (mMode == Mode.FOCUS_STACK && mBurstSize > 1) {
-                applyFocusStep(b, i, lastResult);
             }
             mEvOffsets.add(ev);
             mPendingJpeg.add(new PendingShot(i, ev));
@@ -595,6 +609,24 @@ public class StillCaptureManager {
 
     /** Carry the user's chosen camera settings across to the still request. */
     private void copyBase(CaptureRequest.Builder from, CaptureRequest.Builder to) {
+        copyBase(from, to, true);
+    }
+
+    /**
+     * @param includeCrop carry SCALER_CROP_REGION across. TRUE for ordinary stills, so they
+     *                    frame like the preview the operator aimed. FALSE for requests that
+     *                    target PHYSICAL camera streams.
+     *
+     * SCALER_CROP_REGION is expressed in the LOGICAL camera's coordinate system. Handing a
+     * logical crop to a request whose outputs are bound to physical sensors asks the HAL to
+     * map one sensor's rectangle onto another's array, and the mapping it chooses is not
+     * specified. The first stereo pair came back with the ultrawide framed exactly like the
+     * main camera — a 1.64x crop, measured — which is what that mapping would produce.
+     * Whether the crop was the cause is now recorded per shot rather than assumed, but
+     * either way a physical-stream request has no business carrying a logical rectangle.
+     */
+    private void copyBase(CaptureRequest.Builder from, CaptureRequest.Builder to,
+                          boolean includeCrop) {
         CaptureRequest.Key<?>[] keys = {
                 CaptureRequest.CONTROL_MODE,
                 CaptureRequest.CONTROL_AE_MODE,
@@ -608,7 +640,6 @@ public class StillCaptureManager {
                 CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE,
                 CaptureRequest.SENSOR_EXPOSURE_TIME,
                 CaptureRequest.SENSOR_SENSITIVITY,
-                CaptureRequest.SCALER_CROP_REGION,
                 // Carried across so a torch lit for the preview stays lit for the shot.
                 CaptureRequest.FLASH_MODE,
         };
@@ -617,6 +648,77 @@ public class StillCaptureManager {
             if (v != null) {
                 to.set(key, v);
             }
+        }
+        if (includeCrop) {
+            Rect crop = from.get(CaptureRequest.SCALER_CROP_REGION);
+            if (crop != null) {
+                to.set(CaptureRequest.SCALER_CROP_REGION, crop);
+            }
+        }
+    }
+
+    /**
+     * Give each physical stream its OWN sensor's full array, and pin the logical zoom to
+     * 1.0, so nothing between the request and the readout has licence to narrow the wide
+     * lens. Both are set explicitly rather than left at the default: a default is whatever
+     * the HAL last had, and the whole point of the ultrawide in this pair is the part of
+     * the scene the main camera cannot see.
+     */
+    private void applyFullFieldOfView(CaptureRequest.Builder b) {
+        if (Build.VERSION.SDK_INT >= 30) {
+            Range<Float> zoom =
+                    mCharacteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+            if (zoom != null && zoom.getLower() <= 1.0f && zoom.getUpper() >= 1.0f) {
+                b.set(CaptureRequest.CONTROL_ZOOM_RATIO, 1.0f);
+            }
+        }
+        if (Build.VERSION.SDK_INT < 28) {
+            return;
+        }
+        for (String pid : new String[]{PHYS_ULTRAWIDE, PHYS_MAIN}) {
+            Rect active = physicalActiveArray(pid);
+            if (active != null) {
+                b.setPhysicalCameraKey(CaptureRequest.SCALER_CROP_REGION, active, pid);
+                Log.d(TAG, "physical " + pid + " crop set to its own array " + active);
+            }
+        }
+    }
+
+    /**
+     * Record the readout rectangle and zoom for one shot.
+     *
+     * @param per    this lens's own result where the device supplies one, else the logical
+     *               result — the crop is per-sensor, so the physical result is the one that
+     *               answers the question.
+     * @param outer  the logical result, which is where CONTROL_ZOOM_RATIO lives.
+     */
+    private void recordCrop(RecordingProtos.StillMetaData.Builder b, CaptureResult per,
+                            TotalCaptureResult outer) {
+        Rect crop = per.get(CaptureResult.SCALER_CROP_REGION);
+        if (crop != null) {
+            b.setCropRegion(RecordingProtos.VideoFrameMetaData.Rect.newBuilder()
+                    .setLeft(crop.left).setTop(crop.top)
+                    .setRight(crop.right).setBottom(crop.bottom));
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            Float z = outer.get(CaptureResult.CONTROL_ZOOM_RATIO);
+            if (z != null) {
+                b.setZoomRatio(z);
+            }
+        }
+    }
+
+    /** The full active array of one physical sensor, or null if it cannot be read. */
+    private Rect physicalActiveArray(String physicalId) {
+        if (Build.VERSION.SDK_INT < 28 || mCameraManager == null) {
+            return null;
+        }
+        try {
+            return mCameraManager.getCameraCharacteristics(physicalId)
+                    .get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+        } catch (CameraAccessException | IllegalArgumentException e) {
+            Log.w(TAG, "no characteristics for physical " + physicalId + ": " + e);
+            return null;
         }
     }
 
@@ -689,32 +791,107 @@ public class StillCaptureManager {
      * 20.6 cm at 1 m, 2.04 m at 3 m. So stepping by slightly less than one DOF width
      * gives adjacent slices that overlap, which is exactly what a stack merge needs,
      * and it self-adjusts to whichever lens is in use.
+     *
+     * WHY THIS RETURNS A PLAN INSTEAD OF SETTING A REQUEST. The first build handed five
+     * focus distances to `captureBurst` and got five identical pictures: every frame came
+     * back reporting 0.100 dioptres, and the global sharpness across the stack spanned
+     * 1.0048x. The frames landed 33.3 ms apart — one sensor period — because that is what
+     * captureBurst is for. A voice coil cannot slew and settle in one frame time, and with
+     * a pipeline three to five deep the per-request CONTROL_AF_MODE_OFF never reached the
+     * lens before the next readout.
+     *
+     * The proof sits in the same recording: the exposure bracket went out through the SAME
+     * captureBurst call and tracked an exact 2.0000x ladder, because SENSOR_EXPOSURE_TIME
+     * is a register write with nothing to move. Electronic parameter, fine. Mechanical
+     * parameter, not fine. So focus is now driven one step at a time by
+     * Camera2Proxy.captureFocusStack, which parks the lens with a repeating request and
+     * waits for it to arrive before opening the shutter.
      */
-    private void applyFocusStep(CaptureRequest.Builder b, int index,
-                                TotalCaptureResult base) {
+    public float[] planFocusStack(TotalCaptureResult base, int shots) {
+        int n = Math.max(1, Math.min(MAX_BURST, shots));
         Float minDist =
                 mCharacteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
-        if (minDist == null || minDist == 0f) {
-            return; // fixed-focus lens
-        }
         Float centre = base != null ? base.get(TotalCaptureResult.LENS_FOCUS_DISTANCE) : null;
-        if (centre == null) {
-            Log.w(TAG, "no metered focus distance; skipping focus bracket");
-            return;
+        if (minDist == null || minDist == 0f || centre == null) {
+            Log.w(TAG, "fixed-focus lens or no metered focus; focus stack collapses to 1");
+            return new float[]{centre != null ? centre : 0f};
         }
         float step = dofDioptres() * 0.8f;   // 20% overlap between adjacent slices
-        float span = step * (mBurstSize - 1);
+        float span = step * (n - 1);
         // SHIFT the bracket to fit the lens's range rather than clamping into it.
-        // Clamping wastes frames on duplicates: with AF locked at 10 m, two of five
-        // requests fell past infinity, were pinned to the same value and returned the
-        // same picture. Shifting keeps every frame a distinct slice.
-        float start = centre - span / 2f;
-        start = Math.max(0f, Math.min(minDist - span, start));
-        float d = Math.max(0f, Math.min(minDist, start + step * index));
-        mRequestedFocus.put(index, d);
-        b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF);
-        b.set(CaptureRequest.LENS_FOCUS_DISTANCE, d);
+        float start = Math.max(0f, Math.min(minDist - span, centre - span / 2f));
+        float[] out = new float[n];
+        for (int i = 0; i < n; i++) {
+            out[i] = Math.max(0f, Math.min(minDist, start + step * i));
+        }
+        Log.i(TAG, "focus plan around " + centre + " D, step " + step
+                + " D: " + java.util.Arrays.toString(out));
+        return out;
     }
+
+    /** Bookkeeping for a sequenced focus stack; one call before the first shot. */
+    public void beginFocusStack(int shots, boolean writeRaw, File outputDir,
+                                RecordingWriter writer) {
+        mOutputDir = outputDir;
+        mRecordingWriter = writer;
+        mMode = Mode.FOCUS_STACK;
+        mBurstSize = Math.max(1, Math.min(MAX_BURST, shots));
+        mRawWritten = 0;
+        mBurstId = SystemClock.elapsedRealtimeNanos();
+        mPendingJpeg.clear();
+        mPendingRaw.clear();
+        mEvOffsets.clear();
+        mRequestedFocus.clear();
+        mFocusSettleNs.clear();
+        mFocusSettled.clear();
+        mShotCounter = 0;
+        mWriteRawThisBurst = writeRaw && mRawReader != null;
+    }
+
+    /**
+     * One frame of a sequenced focus stack, at a lens position the caller has already
+     * driven the lens to and waited on.
+     *
+     * @param settleNs how long the wait took, recorded per shot
+     * @param settled  whether the lens reported arriving, or the wait timed out on it
+     */
+    public void captureFocusShot(CameraDevice device, CameraCaptureSession session,
+                                 CaptureRequest.Builder baseRequest, int index,
+                                 float dioptres, long settleNs, boolean settled) {
+        if (session == null || mJpegReader == null) {
+            return;
+        }
+        try {
+            CaptureRequest.Builder b =
+                    device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            copyBase(baseRequest, b);
+            if (mJpegQuality > 0) {
+                b.set(CaptureRequest.JPEG_QUALITY, (byte) mJpegQuality);
+            }
+            b.set(CaptureRequest.JPEG_THUMBNAIL_SIZE, new android.util.Size(0, 0));
+            b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF);
+            b.set(CaptureRequest.LENS_FOCUS_DISTANCE, dioptres);
+            b.addTarget(mJpegReader.getSurface());
+            if (mWriteRawThisBurst) {
+                b.addTarget(mRawReader.getSurface());
+            }
+            mRequestedFocus.put(index, dioptres);
+            mFocusSettleNs.put(index, settleNs);
+            mFocusSettled.put(index, settled);
+            mEvOffsets.add(0f);
+            mPendingJpeg.add(new PendingShot(index, 0f));
+            if (mWriteRawThisBurst) {
+                mPendingRaw.add(new PendingShot(index, 0f));
+            }
+            session.capture(b.build(), mCaptureCallback, mHandler);
+            Log.i(TAG, String.format(java.util.Locale.US,
+                    "focus shot %d at %.3f D (%s after %.0f ms)",
+                    index, dioptres, settled ? "settled" : "TIMED OUT", settleNs / 1e6));
+        } catch (CameraAccessException | IllegalStateException e) {
+            Log.e(TAG, "focus shot failed: " + e);
+        }
+    }
+
 
     /** Width of one depth-of-field slice, in dioptres, for a one-pixel blur circle. */
     private float dofDioptres() {
@@ -736,6 +913,11 @@ public class StillCaptureManager {
     }
 
     private final java.util.HashMap<Integer, Float> mRequestedFocus = new java.util.HashMap<>();
+    // How long the lens took to reach each step, and whether it got there at all. Recorded
+    // per shot so a bracket that silently collapses shows up in the metadata rather than
+    // only under a sharpness measure after the fact.
+    private final java.util.HashMap<Integer, Long> mFocusSettleNs = new java.util.HashMap<>();
+    private final java.util.HashMap<Integer, Boolean> mFocusSettled = new java.util.HashMap<>();
 
     private final CameraCaptureSession.CaptureCallback mCaptureCallback =
             new CameraCaptureSession.CaptureCallback() {
@@ -833,6 +1015,15 @@ public class StillCaptureManager {
         Float requested = mRequestedFocus.get(index);
         if (requested != null) {
             b.setRequestedFocusDiopters(requested);
+        }
+        recordCrop(b, result, result);
+        // How long the lens took to arrive at this frame's target, and whether it got
+        // there before the shutter opened. Zero for anything that did not drive focus.
+        Long settle = mFocusSettleNs.get(index);
+        if (settle != null) {
+            b.setFocusSettleNs(settle);
+            Boolean ok = mFocusSettled.get(index);
+            b.setFocusSettled(ok != null && ok);
         }
 
         if (mImuManager != null) {

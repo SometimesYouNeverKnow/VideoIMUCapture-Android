@@ -23,6 +23,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.SystemClock;
 import androidx.annotation.NonNull;
 
 import androidx.preference.PreferenceManager;
@@ -35,6 +36,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static java.lang.Math.abs;
 
@@ -114,6 +116,166 @@ public class Camera2Proxy {
 
     public StillCaptureManager getStillCaptureManager() {
         return mStillCaptureManager;
+    }
+
+    // ---------------------------------------------------------------- focus stack
+    //
+    // A focus bracket cannot be a burst. The first build proved it: five requests spanning
+    // 0.658 dioptres came back as five frames all reporting 0.100 D, landing 33.3 ms apart
+    // — one sensor period — with a global sharpness spread of 1.0048x. captureBurst exists
+    // to minimise the gap between frames, which is exactly the wrong property when the
+    // parameter being bracketed has to physically move.
+    //
+    // So each step is now: park the lens with a REPEATING request, wait until the lens
+    // reports it has arrived, then open the shutter. The wait is bounded, and how long it
+    // took is recorded per shot, so a lens that never arrives is visible in the data.
+
+    /** Dioptre tolerance for "the lens got there". Well under one depth-of-field step. */
+    private static final float FOCUS_TOLERANCE_D = 0.02f;
+    /** Give up on a step after this long and shoot anyway, flagged as unsettled. */
+    private static final long FOCUS_SETTLE_TIMEOUT_MS = 400L;
+    /** Breathing room after the shutter before the lens is driven somewhere else. */
+    private static final long FOCUS_SHOT_SPACING_MS = 120L;
+
+    // THREADING. Every one of these is written by runFocusStep and read by onFocusResult,
+    // which runs on the camera callback thread. The whole sequence is therefore posted to
+    // mBackgroundHandler — the same thread the session callbacks are delivered on — so the
+    // steps and the results they are waiting for are serialised by construction rather than
+    // by hoping. volatile covers the initial hand-off from whichever thread pressed the
+    // button.
+    private volatile float mFocusTarget = Float.NaN;
+    private volatile long mFocusStepStartNs;
+    private volatile Runnable mFocusTimeout;
+    private final AtomicBoolean mFocusStepPending = new AtomicBoolean(false);
+    private final AtomicBoolean mFocusStackRunning = new AtomicBoolean(false);
+
+    /**
+     * Drive a focus stack one settled step at a time.
+     *
+     * @param shots number of slices; the plan is centred on the current autofocus result
+     *              and stepped by the depth of field, so this is "how thick a subject".
+     */
+    public void captureFocusStack(int shots, boolean writeRaw, File outputDir,
+                                  RecordingWriter writer) {
+        if (mStillCaptureManager == null || mCaptureSession == null
+                || mPreviewRequestBuilder == null || mCameraDevice == null) {
+            Log.w(TAG, "focus stack requested before the session exists");
+            return;
+        }
+        if (!mFocusStackRunning.compareAndSet(false, true)) {
+            Log.w(TAG, "focus stack already running; ignoring");
+            return;
+        }
+        final float[] plan = mStillCaptureManager.planFocusStack(mLastResult, shots);
+        mStillCaptureManager.beginFocusStack(plan.length, writeRaw, outputDir, writer);
+        // Remember what the preview was doing so autofocus can be handed back afterwards.
+        // If the preview never named a mode, hand back CONTINUOUS_PICTURE rather than the
+        // OFF this sequence is about to set — otherwise a finished stack leaves the camera
+        // stuck at the last slice's focus with no way back but a restart.
+        final Integer afMode = mPreviewRequestBuilder.get(CaptureRequest.CONTROL_AF_MODE);
+        final int restoreMode = afMode != null
+                ? afMode : CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE;
+        final Float afDist = mPreviewRequestBuilder.get(CaptureRequest.LENS_FOCUS_DISTANCE);
+        mBackgroundHandler.post(() -> runFocusStep(plan, 0, restoreMode, afDist));
+    }
+
+    private void runFocusStep(float[] plan, int index, int restoreAfMode,
+                              Float restoreAfDist) {
+        if (index >= plan.length) {
+            restoreAfterFocusStack(restoreAfMode, restoreAfDist);
+            mFocusStackRunning.set(false);
+            Log.i(TAG, "focus stack complete: " + plan.length + " slices");
+            return;
+        }
+        final float target = plan[index];
+        mFocusTarget = target;
+        mFocusStepStartNs = SystemClock.elapsedRealtimeNanos();
+        mFocusStepPending.set(true);
+
+        final Runnable timeout = () -> fireFocusShot(plan, index, target, false,
+                restoreAfMode, restoreAfDist);
+        mFocusTimeout = timeout;
+        mFocusSettleSignal = () -> fireFocusShot(plan, index, target, true,
+                restoreAfMode, restoreAfDist);
+
+        try {
+            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE,
+                    CameraMetadata.CONTROL_AF_MODE_OFF);
+            mPreviewRequestBuilder.set(CaptureRequest.LENS_FOCUS_DISTANCE, target);
+            mCaptureSession.setRepeatingRequest(mPreviewRequestBuilder.build(),
+                    mSessionCaptureCallback, mBackgroundHandler);
+        } catch (CameraAccessException | IllegalStateException e) {
+            Log.e(TAG, "could not drive focus to " + target + ": " + e);
+        }
+        mBackgroundHandler.postDelayed(timeout, FOCUS_SETTLE_TIMEOUT_MS);
+    }
+
+    /**
+     * Take the shot for one step. Reached from either the settle callback or the timeout;
+     * the AtomicBoolean guarantees exactly one of them wins, and `settled` is passed in by
+     * whichever did rather than inferred from the elapsed time.
+     */
+    private void fireFocusShot(float[] plan, int index, float target, boolean settled,
+                               int restoreAfMode, Float restoreAfDist) {
+        if (!mFocusStepPending.compareAndSet(true, false)) {
+            return;
+        }
+        Runnable t = mFocusTimeout;
+        if (t != null) {
+            mBackgroundHandler.removeCallbacks(t);
+        }
+        final long waited = SystemClock.elapsedRealtimeNanos() - mFocusStepStartNs;
+        mStillCaptureManager.captureFocusShot(mCameraDevice, mCaptureSession,
+                mPreviewRequestBuilder, index, target, waited, settled);
+        mBackgroundHandler.postDelayed(
+                () -> runFocusStep(plan, index + 1, restoreAfMode, restoreAfDist),
+                FOCUS_SHOT_SPACING_MS);
+    }
+
+    /**
+     * Called for every preview result while a focus step is outstanding. Accepts only
+     * results whose OWN request carried the target distance — the pipeline is several
+     * frames deep, so results for the previous lens position keep arriving after the new
+     * request goes out, and grading those is precisely how the burst version fooled itself
+     * into reporting five focus positions it never reached.
+     */
+    private void onFocusResult(CaptureRequest request, CaptureResult result) {
+        if (!mFocusStepPending.get()) {
+            return;
+        }
+        Float requested = request.get(CaptureRequest.LENS_FOCUS_DISTANCE);
+        if (requested == null || Math.abs(requested - mFocusTarget) > 1e-4f) {
+            return;   // a result from before this step's request took effect
+        }
+        Integer state = result.get(CaptureResult.LENS_STATE);
+        if (state != null && state != CameraMetadata.LENS_STATE_STATIONARY) {
+            return;   // still moving
+        }
+        Float actual = result.get(CaptureResult.LENS_FOCUS_DISTANCE);
+        if (actual != null && Math.abs(actual - mFocusTarget) > FOCUS_TOLERANCE_D) {
+            return;   // parked, but not where we asked
+        }
+        mFocusSettleSignal.run();
+    }
+
+    /**
+     * Set by runFocusStep, invoked by onFocusResult. Held as a field rather than passed so
+     * the result callback needs no knowledge of which step it is completing.
+     */
+    private volatile Runnable mFocusSettleSignal = () -> {
+    };
+
+    private void restoreAfterFocusStack(int afMode, Float afDist) {
+        try {
+            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, afMode);
+            if (afDist != null) {
+                mPreviewRequestBuilder.set(CaptureRequest.LENS_FOCUS_DISTANCE, afDist);
+            }
+            mCaptureSession.setRepeatingRequest(mPreviewRequestBuilder.build(),
+                    mSessionCaptureCallback, mBackgroundHandler);
+        } catch (CameraAccessException | IllegalStateException e) {
+            Log.w(TAG, "could not restore focus mode: " + e);
+        }
     }
 
     /**
@@ -415,7 +577,8 @@ public class Camera2Proxy {
             // as outputs at configuration time, even though they only receive frames when a
             // burst is fired.
             mStillCaptureManager =
-                    new StillCaptureManager(mCameraCharacteristics, mBackgroundHandler,
+                    new StillCaptureManager(mCameraCharacteristics, mCameraManager,
+                            mBackgroundHandler,
                             ((CameraCaptureActivity) mActivity).getmImuManager());
             final List<Surface> stillSurfaces =
                     mStillCaptureManager.getSurfaces(mStillCaptureManager.rawSupported());
@@ -508,6 +671,10 @@ public class Camera2Proxy {
 
                     // Keep the latest metered result: a bracket steps away from this.
                     mLastResult = result;
+
+                    // A focus stack step may be waiting on the lens to arrive. Checked
+                    // before anything else touches AF state, and cheap when idle.
+                    onFocusResult(request, result);
 
                     if (mCameraSettingsManager.focusOnTouch()) {
                         mFocusTriggered |= (result.get(CaptureResult.CONTROL_AF_STATE) == CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN);

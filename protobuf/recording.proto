@@ -168,6 +168,26 @@ message StillMetaData {
   // build, where frame 0 of a full-range sweep came back at the previous focus. With the
   // two recorded separately that is detectable rather than invisible.
   float requested_focus_diopters = 24;
+
+  // Which part of THIS lens's sensor the HAL actually read out, and what zoom the logical
+  // camera was on. Recorded because the ultrawide half of the first stereo pair came back
+  // framed identically to the main camera: factory intrinsics put its content 1.64x wider
+  // (fx 1651 px on a 4000-wide array against 2755 px on 4080), and a scale search over the
+  // real images peaked at 1.00 with the next-best candidate 3.5x down. Something between
+  // the request and the sensor is cropping the wide lens to the narrow one's field of
+  // view. These two fields are what turn that from an inference into a reading — if the
+  // crop comes back as the physical sensor's full array and the frames still match, the
+  // cause is upstream of the request and the next place to look is the stream
+  // configuration.
+  VideoFrameMetaData.Rect crop_region = 25;
+  float zoom_ratio = 26;          // CONTROL_ZOOM_RATIO, 0 if the device does not report it
+
+  // How long the lens took to arrive, and whether it did. A focus stack is only a stack if
+  // the voice coil actually moved between frames; the first sequenced build records the
+  // settle so a bracket that silently collapses is visible in the data rather than only in
+  // the pixels.
+  int64 focus_settle_ns = 27;
+  bool focus_settled = 28;        // false => the shutter opened on a lens still in motion
 }
 
 // GNSS fix from LocationManager (GPS provider, no fused black box).
