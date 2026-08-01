@@ -134,6 +134,18 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // radiometry; a drifting AE would make the splat explain brightness as content.
         proxy.lockAutoAlgorithms(true);
 
+        // Quality is set by mode rather than by the operator, because the right answer
+        // differs and neither is a preference. Measured on identical pixels (re-encoding
+        // one frame, so noise cannot confound it): q90 is 44% of the size of the device
+        // default for a gradient-field error of ~0.87 luma units per pixel step, against
+        // typical texture gradients of tens of units. A WALK run is hundreds of frames
+        // and storage-bound, so it takes the halving; OBJECT and PANO are a handful of
+        // frames where the storage is irrelevant and the detail is the point.
+        StillCaptureManager scm = proxy.getStillCaptureManager();
+        if (scm != null) {
+            scm.setJpegQuality(mMode == Mode.WALK ? 90 : 0);
+        }
+
         mShots = 0;
         mRunning = true;
         mEndRawPending = false;

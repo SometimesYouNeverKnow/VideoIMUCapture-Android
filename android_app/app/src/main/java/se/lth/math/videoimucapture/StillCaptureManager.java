@@ -74,6 +74,8 @@ public class StillCaptureManager {
     private final CameraCharacteristics mCharacteristics;
     private final Handler mHandler;
     private final IMUManager mImuManager;
+    // 0 = leave the device default alone. Otherwise 1..100, applied per request.
+    private int mJpegQuality = 0;
 
     private ImageReader mJpegReader;
     private ImageReader mRawReader;
@@ -173,6 +175,23 @@ public class StillCaptureManager {
         return mRawSupported;
     }
 
+    /**
+     * JPEG quality, 1..100, or 0 to leave the device default in place.
+     *
+     * Worth setting explicitly: the default was never chosen for this use, and a JPEG
+     * for a solve is judged by whether it preserves local gradient structure for feature
+     * matching, not by whether it looks clean at 100%. The quality/size curve is
+     * strongly concave, so the top few points cost a great deal of storage for detail
+     * that no matcher reads.
+     */
+    public void setJpegQuality(int quality) {
+        mJpegQuality = (quality >= 1 && quality <= 100) ? quality : 0;
+    }
+
+    public int getJpegQuality() {
+        return mJpegQuality;
+    }
+
     /** Attach trigger provenance to the next burst. */
     public void setTriggerContext(CaptureMode mode, float predictedBlurPx,
                                   float omegaRadPerS, boolean forced) {
@@ -183,6 +202,16 @@ public class StillCaptureManager {
     }
 
     public void release() {
+        mIo.shutdown();
+        try {
+            // A burst in flight is tens of MB; losing it to a fast teardown would be
+            // silent data loss.
+            if (!mIo.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                Log.w(TAG, "still writes did not finish before release");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
         if (mJpegReader != null) {
             mJpegReader.close();
             mJpegReader = null;
@@ -234,6 +263,11 @@ public class StillCaptureManager {
                 return;
             }
             copyBase(baseRequest, b);
+            if (mJpegQuality > 0) {
+                b.set(CaptureRequest.JPEG_QUALITY, (byte) mJpegQuality);
+            }
+            // No thumbnail: nothing downstream reads it, and it is encoded per frame.
+            b.set(CaptureRequest.JPEG_THUMBNAIL_SIZE, new android.util.Size(0, 0));
             b.addTarget(mJpegReader.getSurface());
             if (writeRaw && mRawReader != null) {
                 b.addTarget(mRawReader.getSurface());
@@ -450,24 +484,35 @@ public class StillCaptureManager {
     }
 
     private void onJpeg(ImageReader reader) {
+        // Copy out and release the buffer immediately, then write on the IO thread.
+        // The reader callback runs on the camera background handler, which also
+        // services capture results — a 7 MB synchronous write per frame there puts
+        // filesystem latency directly in the path of the next frame's metadata.
+        final byte[] bytes;
+        final int index;
         try (Image image = reader.acquireNextImage()) {
             if (image == null) {
                 return;
             }
             PendingShot shot = mPendingJpeg.poll();
-            int index = shot != null ? shot.index : 0;
-            File out = new File(mOutputDir,
-                    String.format(java.util.Locale.US, "still_%d_%02d.jpg", mBurstId, index));
+            index = shot != null ? shot.index : 0;
             ByteBuffer buf = image.getPlanes()[0].getBuffer();
-            byte[] bytes = new byte[buf.remaining()];
+            bytes = new byte[buf.remaining()];
             buf.get(bytes);
+        } catch (IllegalStateException e) {
+            Log.e(TAG, "JPEG acquire failed: " + e);
+            return;
+        }
+        final File out = new File(mOutputDir,
+                String.format(java.util.Locale.US, "still_%d_%02d.jpg", mBurstId, index));
+        mIo.execute(() -> {
             try (FileOutputStream s = new FileOutputStream(out)) {
                 s.write(bytes);
+                Log.d(TAG, "wrote " + out.getName() + " (" + bytes.length / 1024 + " kB)");
+            } catch (IOException e) {
+                Log.e(TAG, "JPEG write failed: " + e);
             }
-            Log.d(TAG, "wrote " + out.getName() + " (" + bytes.length / 1024 + " kB)");
-        } catch (IOException | IllegalStateException e) {
-            Log.e(TAG, "JPEG write failed: " + e);
-        }
+        });
     }
 
     private void onRaw(ImageReader reader) {
@@ -522,6 +567,11 @@ public class StillCaptureManager {
             }
         }
     }
+
+    /** Single thread, so writes stay ordered and never contend with each other. */
+    private final java.util.concurrent.ExecutorService mIo =
+            java.util.concurrent.Executors.newSingleThreadExecutor(
+                    r -> new Thread(r, "StillWriter"));
 
     private final Object mRawLock = new Object();
     private final java.util.LinkedHashMap<Long, Image> mRawImages = new java.util.LinkedHashMap<>();

@@ -450,6 +450,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
         final int shots = getIntent().getIntExtra("still_shots", 1);
         final float stops = getIntent().getFloatExtra("still_stops", 2.0f);
         final boolean raw = getIntent().getBooleanExtra("still_raw", true);
+        final int jpegQuality = getIntent().getIntExtra("still_jpeg_quality", 0);
 
         // Wait for the camera to actually exist rather than guessing a delay: an adb-driven
         // launch onto a sleeping screen pauses the activity and releases the camera, so a
@@ -460,6 +461,9 @@ public class CameraCaptureActivity extends AppCompatActivity {
             @Override
             public void run() {
                 if (mCamera2Proxy != null) {
+                    if (jpegQuality > 0 && mCamera2Proxy.getStillCaptureManager() != null) {
+                        mCamera2Proxy.getStillCaptureManager().setJpegQuality(jpegQuality);
+                    }
                     captureStills(m, shots, stops, raw);
                 } else if (++attempts[0] < 40) {
                     handler.postDelayed(this, 500L);
