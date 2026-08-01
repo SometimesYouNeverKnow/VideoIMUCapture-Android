@@ -59,6 +59,22 @@
         app:layout_constraintTop_toTopOf="parent"
         app:tint="@null" />
 
+    <!-- Torch. Visible rather than buried, because in the dark it is the only control
+         that adds actual photons — everything else trades blur against noise. -->
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:id="@+id/torch_button"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:contentDescription="@string/torch_description"
+        android:src="@drawable/ic_torch"
+        android:layout_marginTop="88dp"
+        app:backgroundTint="@color/torchOffBkg"
+        app:fabSize="mini"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:tint="@null" />
+
     <!-- Mode strip: all three visible at once, current one lit, one tap to change.
          The capture button then has exactly one meaning at any moment and the operator
          never has to remember hidden state or discover a long-press. -->

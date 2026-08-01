@@ -241,6 +241,16 @@ public class CameraCensus {
             o.put("CONTROL_AE_COMPENSATION_STEP",
                     String.valueOf(ch.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)));
         }
+        putValue(o, "FLASH_INFO_AVAILABLE", ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE));
+        if (Build.VERSION.SDK_INT >= 33) {
+            putValue(o, "FLASH_INFO_STRENGTH_MAXIMUM_LEVEL",
+                    ch.get(CameraCharacteristics.FLASH_INFO_STRENGTH_MAXIMUM_LEVEL));
+            putValue(o, "FLASH_INFO_STRENGTH_DEFAULT_LEVEL",
+                    ch.get(CameraCharacteristics.FLASH_INFO_STRENGTH_DEFAULT_LEVEL));
+        }
+        putValue(o, "CONTROL_POST_RAW_SENSITIVITY_BOOST_RANGE",
+                String.valueOf(ch.get(
+                        CameraCharacteristics.CONTROL_POST_RAW_SENSITIVITY_BOOST_RANGE)));
         putValue(o, "REQUEST_MAX_NUM_OUTPUT_RAW",
                 ch.get(CameraCharacteristics.REQUEST_MAX_NUM_OUTPUT_RAW));
         putValue(o, "SENSOR_INFO_WHITE_LEVEL", ch.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL));

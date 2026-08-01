@@ -12,6 +12,7 @@ import android.hardware.camera2.DngCreator;
 import android.hardware.camera2.TotalCaptureResult;
 import android.media.Image;
 import android.media.ImageReader;
+import android.os.Build;
 import android.os.Handler;
 import android.os.SystemClock;
 import android.util.Log;
@@ -313,6 +314,8 @@ public class StillCaptureManager {
                 CaptureRequest.SENSOR_EXPOSURE_TIME,
                 CaptureRequest.SENSOR_SENSITIVITY,
                 CaptureRequest.SCALER_CROP_REGION,
+                // Carried across so a torch lit for the preview stays lit for the shot.
+                CaptureRequest.FLASH_MODE,
         };
         for (CaptureRequest.Key key : keys) {
             Object v = from.get(key);
@@ -464,6 +467,13 @@ public class StillCaptureManager {
         if (skew != null) {
             b.setFrameReadoutNs(skew);
         }
+        // Read back from the RESULT rather than from what was requested: this records
+        // what the frame was actually lit by, which is the thing downstream needs.
+        Integer flash = result.get(TotalCaptureResult.FLASH_MODE);
+        b.setTorchOn(flash != null
+                && flash == android.hardware.camera2.CameraMetadata.FLASH_MODE_TORCH);
+        // torch_strength stays 0: CaptureResult.FLASH_STRENGTH_LEVEL is API 35 and this
+        // builds against 34. The proto field is reserved for when compileSdk moves.
         // Indexed, not peeked off the pending queue: the JPEG writer drains that queue on
         // its own thread, so peeking here returned whichever shot happened to be at the
         // head and mislabelled the bracket (-1,-1,+1,+1,+2 for a -2..+2 sweep).

@@ -54,6 +54,7 @@ public class Camera2Proxy {
     private StillCaptureManager mStillCaptureManager;
     // Most recent metered result, used as the base exposure a bracket steps away from.
     private volatile TotalCaptureResult mLastResult;
+    private volatile boolean mTorchOn = false;
     private CaptureRequest.Builder mPreviewRequestBuilder;
     private Rect sensorArraySize;
 
@@ -141,6 +142,49 @@ public class Camera2Proxy {
      *
      * No-op when the user has selected fully manual AE — the locks are ignored then.
      */
+    /**
+     * Continuous torch, not a strobe flash.
+     *
+     * Torch rather than FLASH_MODE_SINGLE deliberately: it is lit during preview so the
+     * scene can be framed as it will be exposed, it is constant across every frame of a
+     * burst, and it avoids the pre-flash metering dance that would put an uncontrolled
+     * delay between the trigger deciding to fire and the shutter opening.
+     *
+     * When this is the right tool: close work in the dark — bark, leaves, anything the
+     * camera is within a couple of metres of and that is being photographed to be
+     * IDENTIFIED rather than reconstructed. It buys a short exposure and a low ISO,
+     * which is the difference between a readable macro frame and a noisy smear.
+     *
+     * When it is the wrong tool: anything solving for the scene's own appearance. The
+     * torch travels with the camera, so every surface is lit differently in every frame
+     * and the shading becomes a function of viewpoint. It is flatly wrong for PANO,
+     * where the whole point is to record the environment's light rather than your own.
+     */
+    public void setTorch(boolean on) {
+        mTorchOn = on;
+        if (mCaptureSession == null || mPreviewRequestBuilder == null) {
+            return;
+        }
+        try {
+            mPreviewRequestBuilder.set(CaptureRequest.FLASH_MODE,
+                    on ? CameraMetadata.FLASH_MODE_TORCH : CameraMetadata.FLASH_MODE_OFF);
+            mCaptureSession.setRepeatingRequest(
+                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+            Log.d(TAG, "torch " + (on ? "on" : "off"));
+        } catch (CameraAccessException | IllegalStateException e) {
+            Log.w(TAG, "could not set torch: " + e);
+        }
+    }
+
+    public boolean isTorchOn() {
+        return mTorchOn;
+    }
+
+    public boolean torchAvailable() {
+        Boolean b = mCameraCharacteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
+        return b != null && b;
+    }
+
     /** Public entry for modes that want the whole run radiometrically frozen. */
     public void lockAutoAlgorithms(boolean lock) {
         setAutoAlgorithmLock(lock);

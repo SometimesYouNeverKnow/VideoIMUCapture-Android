@@ -152,6 +152,15 @@ message StillMetaData {
   float omega_at_trigger = 19;   // rad/s, the value the prediction used
   bool trigger_forced = 20;      // fired on the max-interval timeout, never went quiet
   int32 capture_mode = 21;       // 0 MANUAL, 1 WALK, 2 OBJECT, 3 PANO
+
+  // Was the torch lit for this frame? Not cosmetic metadata: a torch-lit frame carries
+  // a light source that MOVED WITH THE CAMERA, so its shading is a function of view
+  // rather than of the scene. Anything solving for appearance has to know which frames
+  // those are, and mixing lit and unlit frames of the same surface without knowing
+  // which is which is how a reconstruction bakes the operator's flashlight into the
+  // geometry.
+  bool torch_on = 22;
+  int32 torch_strength = 23;     // level if the device reports one, else 0
 }
 
 // GNSS fix from LocationManager (GPS provider, no fused black box).

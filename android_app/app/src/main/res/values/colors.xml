@@ -7,4 +7,6 @@
     <color name="recordButtonBkg">#FFFFFA</color>
     <color name="captureButtonBkg">#FFD166</color>
     <color name="captureButtonActiveBkg">#EF6F6C</color>
+    <color name="torchOffBkg">#9E9E9E</color>
+    <color name="torchOnBkg">#FFE066</color>
 </resources>

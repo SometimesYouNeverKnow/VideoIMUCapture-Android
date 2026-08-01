@@ -55,6 +55,7 @@ public class CameraCaptureFragment extends Fragment
     private FloatingActionButton mRecordingButton;
     private FloatingActionButton mWarningButton;
     private FloatingActionButton mCaptureButton;
+    private FloatingActionButton mTorchButton;
     private TextView mCaptureStatusText;
     private TextView[] mModeViews;
 
@@ -152,6 +153,16 @@ public class CameraCaptureFragment extends Fragment
         modes.setStateListener(this::onCaptureRunState);
         highlightMode(modes.getMode());
 
+        mTorchButton = view.findViewById(R.id.torch_button);
+        mTorchButton.setOnClickListener(v -> {
+            Camera2Proxy proxy = getmCamera2Proxy();
+            if (proxy == null || !proxy.torchAvailable()) {
+                return;
+            }
+            proxy.setTorch(!proxy.isTorchOn());
+            updateTorchButton(proxy.isTorchOn());
+        });
+
         // Configure the GLSurfaceView.  This will start the Renderer thread, with an
         // appropriate EGL context.
         mGLView = view.findViewById(R.id.cameraPreview_surfaceView);
@@ -169,6 +180,22 @@ public class CameraCaptureFragment extends Fragment
 
         mCaptureResultText = view.findViewById(R.id.captureResult_text);
 
+    }
+
+    private void updateTorchButton(boolean on) {
+        if (mTorchButton == null) {
+            return;
+        }
+        mTorchButton.setBackgroundTintList(
+                android.content.res.ColorStateList.valueOf(
+                        getResources().getColor(
+                                on ? R.color.torchOnBkg : R.color.torchOffBkg, null)));
+        // PANO records the environment's own light; a torch riding the camera records
+        // the operator's instead. Say so once rather than silently allowing it.
+        if (on && ((CameraCaptureActivity) getActivity()).getmCaptureModeManager()
+                .getMode() == CaptureModeManager.Mode.PANO && mCaptureStatusText != null) {
+            mCaptureStatusText.setText("torch lights YOUR light, not the scene's");
+        }
     }
 
     private void highlightMode(CaptureModeManager.Mode mode) {
