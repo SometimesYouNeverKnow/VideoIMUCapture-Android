@@ -1,6 +1,7 @@
 package se.lth.math.videoimucapture;
 
 import android.graphics.ImageFormat;
+import android.graphics.Rect;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraCaptureSession;
@@ -544,6 +545,7 @@ public class StillCaptureManager {
         mPendingJpeg.clear();
         mPendingRaw.clear();
         mEvOffsets.clear();
+        mRequestedFocus.clear();
         mShotCounter = 0;
         mWriteRawThisBurst = writeRaw && mRawReader != null;
 
@@ -572,7 +574,7 @@ public class StillCaptureManager {
                 ev = -stops + 2f * stops * i / (mBurstSize - 1);
                 applyExposureOffset(b, lastResult, ev);
             } else if (mMode == Mode.FOCUS_STACK && mBurstSize > 1) {
-                applyFocusStep(b, i);
+                applyFocusStep(b, i, lastResult);
             }
             mEvOffsets.add(ev);
             mPendingJpeg.add(new PendingShot(i, ev));
@@ -666,19 +668,74 @@ public class StillCaptureManager {
         b.set(CaptureRequest.SENSOR_SENSITIVITY, iso);
     }
 
-    /** Step focus linearly in DIOPTRES across the usable range — that is the linear axis. */
-    private void applyFocusStep(CaptureRequest.Builder b, int index) {
+    /**
+     * Bracket focus AROUND where autofocus put it, stepping by the depth of field.
+     *
+     * The first version swept the lens's whole travel, infinity to its 10 cm minimum.
+     * That is wrong twice over. It spends almost every frame in the macro end — a
+     * subject at half a metre got one useful frame out of five and the rest looked
+     * identical — and the opening excursion is so large the voice coil cannot settle
+     * within a burst, so frame 0 came back at the previous focus rather than the
+     * requested one.
+     *
+     * The step is derived, not chosen. Depth of field has a CONSTANT width in dioptre
+     * space, independent of distance:
+     *
+     *     DOF_dioptres = 2 * N * c / f^2
+     *
+     * with N the f-number, c the circle of confusion and f the focal length. On this
+     * camera (f/1.7, 6.3 mm, 2.40 um pixels) that is 0.206 dioptres for a one-pixel
+     * blur circle — which matches the geometric DOF at every distance: 5.1 cm at 0.5 m,
+     * 20.6 cm at 1 m, 2.04 m at 3 m. So stepping by slightly less than one DOF width
+     * gives adjacent slices that overlap, which is exactly what a stack merge needs,
+     * and it self-adjusts to whichever lens is in use.
+     */
+    private void applyFocusStep(CaptureRequest.Builder b, int index,
+                                TotalCaptureResult base) {
         Float minDist =
                 mCharacteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
         if (minDist == null || minDist == 0f) {
             return; // fixed-focus lens
         }
-        // Dioptres: 0 = infinity, minDist = closest. Uniform steps in dioptres give
-        // roughly uniform depth-of-field overlap, which uniform metres would not.
-        float d = minDist * index / Math.max(1, mBurstSize - 1);
+        Float centre = base != null ? base.get(TotalCaptureResult.LENS_FOCUS_DISTANCE) : null;
+        if (centre == null) {
+            Log.w(TAG, "no metered focus distance; skipping focus bracket");
+            return;
+        }
+        float step = dofDioptres() * 0.8f;   // 20% overlap between adjacent slices
+        float span = step * (mBurstSize - 1);
+        // SHIFT the bracket to fit the lens's range rather than clamping into it.
+        // Clamping wastes frames on duplicates: with AF locked at 10 m, two of five
+        // requests fell past infinity, were pinned to the same value and returned the
+        // same picture. Shifting keeps every frame a distinct slice.
+        float start = centre - span / 2f;
+        start = Math.max(0f, Math.min(minDist - span, start));
+        float d = Math.max(0f, Math.min(minDist, start + step * index));
+        mRequestedFocus.put(index, d);
         b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF);
         b.set(CaptureRequest.LENS_FOCUS_DISTANCE, d);
     }
+
+    /** Width of one depth-of-field slice, in dioptres, for a one-pixel blur circle. */
+    private float dofDioptres() {
+        float[] apertures =
+                mCharacteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES);
+        float[] focals =
+                mCharacteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+        android.util.SizeF physical =
+                mCharacteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
+        Rect active = mCharacteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+        if (apertures == null || apertures.length == 0 || focals == null || focals.length == 0
+                || physical == null || active == null || active.width() == 0) {
+            return 0.2f;   // the measured value for this camera, as a safe default
+        }
+        float n = apertures[0];
+        float f = focals[0];                                   // mm
+        float c = physical.getWidth() / active.width();        // mm, one pixel
+        return 2f * n * c / (f * f) * 1000f;                   // per metre = dioptres
+    }
+
+    private final java.util.HashMap<Integer, Float> mRequestedFocus = new java.util.HashMap<>();
 
     private final CameraCaptureSession.CaptureCallback mCaptureCallback =
             new CameraCaptureSession.CaptureCallback() {
@@ -772,6 +829,10 @@ public class StillCaptureManager {
         // head and mislabelled the bracket (-1,-1,+1,+1,+2 for a -2..+2 sweep).
         if (index < mEvOffsets.size()) {
             b.setEvOffset(mEvOffsets.get(index));
+        }
+        Float requested = mRequestedFocus.get(index);
+        if (requested != null) {
+            b.setRequestedFocusDiopters(requested);
         }
 
         if (mImuManager != null) {

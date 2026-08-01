@@ -161,6 +161,13 @@ message StillMetaData {
   // geometry.
   bool torch_on = 22;
   int32 torch_strength = 23;     // level if the device reports one, else 0
+
+  // What the focus bracket ASKED for, against focus_distance_diopters which is what the
+  // lens reported. A voice coil cannot slew arbitrarily fast, so a bracket can request a
+  // step the lens has not reached by the time the shutter opens — measured on the first
+  // build, where frame 0 of a full-range sweep came back at the previous focus. With the
+  // two recorded separately that is detectable rather than invisible.
+  float requested_focus_diopters = 24;
 }
 
 // GNSS fix from LocationManager (GPS provider, no fused black box).
