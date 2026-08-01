@@ -89,6 +89,80 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         return mTrigger;
     }
 
+    // ------------------------------------------------------------------- video session
+    //
+    // TWO BUTTONS, TWO INSTRUMENTS, ONE DISCIPLINE. The camera button takes stills; the
+    // record button takes video. What the MODE decides is not which button does what — it
+    // is the discipline applied to whichever one is pressed: locked radiometry, an IMU and
+    // GNSS stream on the same clock, and an output directory named for what it contains.
+    //
+    // This exists because plain video recording had none of that. The 2026-08-01 walk came
+    // back with one exposure value across 948 frames and it looked like the lock working;
+    // it was not locked at all. The scene was uniformly bright and AE happened to sit on
+    // the sensor's ISO floor for half a minute. Step into shade and the same recording
+    // would have drifted, and a radiance field would have explained the drift as content.
+    //
+    // The two also COMPOSE. Press record then capture and the stills land in the video's
+    // own directory, sharing its writer and therefore its clock — dense frames for
+    // structure plus full-resolution stills at the quiet moments, which is exactly the
+    // combination the 09:39 walk should have produced and did not.
+
+    private boolean mVideoOwnsSession = false;
+
+    /**
+     * Claim (or join) a capture session for a video recording.
+     *
+     * @return the directory the video and its metadata belong in, or null on failure.
+     */
+    public File beginVideoSession() {
+        if (mRunning && mRunDir != null) {
+            // A stills run is already up: join it rather than opening a second writer over
+            // the top of the first. One session, one clock, one directory.
+            mVideoOwnsSession = false;
+            notifyState(true, mMode + ": video + stills");
+            Log.i(TAG, "video joining the active " + mMode + " run in " + mRunDir);
+            return mRunDir;
+        }
+        File dir = mActivity.newCaptureDir(mMode.name().toLowerCase(java.util.Locale.US) + "_vid");
+        if (dir == null) {
+            return null;
+        }
+        mVideoOwnsSession = true;
+        mRunDir = dir;
+        Camera2Proxy proxy = mActivity.getmCamera2Proxy();
+        if (proxy != null) {
+            proxy.lockAutoAlgorithms(true);
+        }
+        notifyState(true, mMode == Mode.OBJECT
+                ? "OBJECT: video adds little to a fixed viewpoint"
+                : mMode + ": video recording");
+        Log.i(TAG, "video session started in " + dir + " (mode " + mMode + ")");
+        return dir;
+    }
+
+    /** Release whatever beginVideoSession took, and nothing that it did not. */
+    public void endVideoSession() {
+        if (!mVideoOwnsSession) {
+            // The stills run owns the session; it will unlock and close on its own stop.
+            notifyState(mRunning, mRunning ? mMode + " running" : "");
+            return;
+        }
+        mVideoOwnsSession = false;
+        Camera2Proxy proxy = mActivity.getmCamera2Proxy();
+        if (proxy != null) {
+            proxy.lockAutoAlgorithms(false);
+        }
+        File dir = mRunDir;
+        mRunDir = null;
+        notifyState(false, "video saved");
+        Log.i(TAG, "video session ended: " + dir);
+    }
+
+    /** True when the video recording, not a stills run, is holding the session open. */
+    public boolean videoOwnsSession() {
+        return mVideoOwnsSession;
+    }
+
     /** The camera button. Exactly one entry point, whatever the mode. */
     public void onCaptureButton() {
         if (mMode == Mode.OBJECT) {

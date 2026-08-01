@@ -392,19 +392,38 @@ public class CameraCaptureFragment extends Fragment
 
     private void startRecording() {
         Camera2Proxy camera2Proxy = getmCamera2Proxy();
-        String outputDir = renewOutputDir();
+        CaptureModeManager modes =
+                ((CameraCaptureActivity) getActivity()).getmCaptureModeManager();
+        // The mode owns the session: it names the directory, locks the auto algorithms so
+        // the clip has one radiometry, and decides whether this is a new session or a join
+        // onto a stills run that is already streaming.
+        File dir = modes.beginVideoSession();
+        if (dir == null) {
+            mRecordingEnabled = false;
+            updateControls();
+            return;
+        }
+        String outputDir = dir.getAbsolutePath();
         String outputFile = outputDir + File.separator + "video_recording.mp4";
         String metaFile = outputDir + File.separator + "video_meta.pb3";
         RecordingWriter recordingWriter = getsRecordingWriter();
-        try {
-            recordingWriter.startRecording(metaFile);
-        } catch (IOException e) {
-            throw new RuntimeException("Could not start meta data recording:" + e);
+        // Only open the writer if nothing else already has it. Calling startRecording on a
+        // live writer would put a second header over the first and orphan everything the
+        // stills run had already queued.
+        boolean writerWasIdle = !recordingWriter.isRecording();
+        if (writerWasIdle) {
+            try {
+                recordingWriter.startRecording(metaFile);
+            } catch (IOException e) {
+                throw new RuntimeException("Could not start meta data recording:" + e);
+            }
         }
 
         mRenderer.resetOutputFiles(outputFile, recordingWriter); // this will not cause sync issues
-        getmImuManager().startRecording(recordingWriter);
-        ((CameraCaptureActivity) getActivity()).getmGnssLogger().startRecording(recordingWriter);
+        if (writerWasIdle) {
+            getmImuManager().startRecording(recordingWriter);
+            ((CameraCaptureActivity) getActivity()).getmGnssLogger().startRecording(recordingWriter);
+        }
 
         if (camera2Proxy != null) {
             camera2Proxy.startRecordingCaptureResult(recordingWriter);
@@ -426,8 +445,16 @@ public class CameraCaptureFragment extends Fragment
         if (camera2Proxy != null) {
             camera2Proxy.stopRecordingCaptureResult();
         }
-        getmImuManager().stopRecording();
-        ((CameraCaptureActivity) getActivity()).getmGnssLogger().stopRecording();
+        CaptureModeManager modes =
+                ((CameraCaptureActivity) getActivity()).getmCaptureModeManager();
+        // Tear down the sensor streams only if the video owned them. If a stills run is
+        // still going, stopping its IMU here would blind the stillness trigger mid-walk.
+        boolean ownedSession = modes.videoOwnsSession();
+        modes.endVideoSession();
+        if (ownedSession) {
+            getmImuManager().stopRecording();
+            ((CameraCaptureActivity) getActivity()).getmGnssLogger().stopRecording();
+        }
 
         mGLView.queueEvent(new Runnable() {
             @Override

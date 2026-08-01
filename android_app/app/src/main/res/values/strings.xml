@@ -9,8 +9,13 @@
     <string name="settings_toolbar">Settings</string>
     <string name="back_toolbar">Back</string>
 
-    <string name="record_description">Toggle recording</string>
+    <string name="record_description">Toggle video recording</string>
     <string name="capture_description">Capture stills</string>
+    <!-- Captions under the two buttons. Present because the mode strip above them used to
+         sit over the record button, so choosing WALK and pressing the obvious thing below
+         it started a video instead of a walk run. -->
+    <string name="capture_label_stills">STILLS</string>
+    <string name="capture_label_video">VIDEO</string>
     <string name="torch_description">Toggle torch</string>
     <string name="info_toolbar">Information</string>
     <string name="info_dialog_title">Information</string>

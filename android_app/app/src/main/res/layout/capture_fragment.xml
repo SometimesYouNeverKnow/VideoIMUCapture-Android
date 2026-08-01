@@ -77,14 +77,22 @@
 
     <!-- Mode strip: all three visible at once, current one lit, one tap to change.
          The capture button then has exactly one meaning at any moment and the operator
-         never has to remember hidden state or discover a long-press. -->
+         never has to remember hidden state or discover a long-press.
+
+         It is constrained above the BUTTON ROW, not above one button. The first version
+         centred this strip and centred the record button beneath it, leaving the capture
+         button off to one side — so the obvious thing to press after choosing WALK was the
+         big centred button directly below the word WALK, which recorded video. That is
+         what happened on 2026-08-01: a WALK mode session nine seconds long and stationary,
+         then a video recording during which the operator actually walked. The strip now
+         governs a row, and each button says underneath it what it does. -->
     <LinearLayout
         android:id="@+id/captureMode_strip"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginBottom="12dp"
         android:orientation="horizontal"
-        app:layout_constraintBottom_toTopOf="@+id/capture_button"
+        app:layout_constraintBottom_toTopOf="@+id/capture_controls_row"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent">
 
@@ -134,33 +142,72 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent" />
 
-    <!-- The second ability, on one button. Sits beside the record button rather than
-         replacing it: video and stills are different instruments for different jobs. -->
-    <com.google.android.material.floatingactionbutton.FloatingActionButton
-        android:id="@+id/capture_button"
+    <!-- Two instruments, side by side and symmetric about the centre, each captioned.
+         Neither sits in the "primary" centre slot, because neither is primary: stills and
+         video answer different questions and the mode above decides the discipline that
+         applies to whichever is pressed. -->
+    <LinearLayout
+        android:id="@+id/capture_controls_row"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginEnd="32dp"
-        android:layout_marginBottom="50dp"
-        android:contentDescription="@string/capture_description"
-        android:src="@drawable/ic_capture_still"
-        app:backgroundTint="@color/captureButtonBkg"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toStartOf="@+id/toggleRecording_button"
-        app:tint="@null" />
-
-    <com.google.android.material.floatingactionbutton.FloatingActionButton
-        android:id="@+id/toggleRecording_button"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center|bottom"
-        android:layout_margin="50dp"
-        android:contentDescription="@string/record_description"
-        android:src="@drawable/ic_start_record"
-        app:backgroundTint="@color/recordButtonBkg"
+        android:layout_marginBottom="36dp"
+        android:gravity="center"
+        android:orientation="horizontal"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:tint="@null" />
+        app:layout_constraintStart_toStartOf="parent">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
+
+            <com.google.android.material.floatingactionbutton.FloatingActionButton
+                android:id="@+id/capture_button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:contentDescription="@string/capture_description"
+                android:src="@drawable/ic_capture_still"
+                app:backgroundTint="@color/captureButtonBkg"
+                app:tint="@null" />
+
+            <com.google.android.material.textview.MaterialTextView
+                android:id="@+id/capture_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="@string/capture_label_stills"
+                android:textAppearance="@style/TextAppearance.MyApp.Overlay" />
+        </LinearLayout>
+
+        <android.widget.Space
+            android:layout_width="56dp"
+            android:layout_height="1dp" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
+
+            <com.google.android.material.floatingactionbutton.FloatingActionButton
+                android:id="@+id/toggleRecording_button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:contentDescription="@string/record_description"
+                android:src="@drawable/ic_start_record"
+                app:backgroundTint="@color/recordButtonBkg"
+                app:tint="@null" />
+
+            <com.google.android.material.textview.MaterialTextView
+                android:id="@+id/record_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="@string/capture_label_video"
+                android:textAppearance="@style/TextAppearance.MyApp.Overlay" />
+        </LinearLayout>
+    </LinearLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>
