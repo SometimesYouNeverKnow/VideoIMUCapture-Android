@@ -141,6 +141,50 @@ public class Camera2Proxy {
      *
      * No-op when the user has selected fully manual AE — the locks are ignored then.
      */
+    /** Public entry for modes that want the whole run radiometrically frozen. */
+    public void lockAutoAlgorithms(boolean lock) {
+        setAutoAlgorithmLock(lock);
+    }
+
+    /**
+     * Hand the stillness trigger the optics it should be modelling.
+     *
+     * Focal length in pixels comes from the census-grade intrinsics where present and
+     * falls back to focal-length-over-pixel-pitch; exposure comes from the most recent
+     * metered result, because it moves by orders of magnitude between sun and shade and
+     * a blur budget computed against a stale exposure is the wrong budget.
+     */
+    public void refreshTriggerOptics(StillnessTrigger trigger) {
+        if (trigger == null) {
+            return;
+        }
+        float focalPx = 0f;
+        float[] intrinsics = mCameraCharacteristics.get(
+                CameraCharacteristics.LENS_INTRINSIC_CALIBRATION);
+        if (intrinsics != null && intrinsics.length >= 1 && intrinsics[0] > 0) {
+            focalPx = intrinsics[0];
+        } else {
+            Rect active = mCameraCharacteristics.get(
+                    CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+            android.util.SizeF physical = mCameraCharacteristics.get(
+                    CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
+            Float focalMm = mLastResult != null
+                    ? mLastResult.get(CaptureResult.LENS_FOCAL_LENGTH) : null;
+            if (active != null && physical != null && focalMm != null
+                    && physical.getWidth() > 0) {
+                focalPx = focalMm * active.width() / physical.getWidth();
+            }
+        }
+        long exposureNs = 0;
+        if (mLastResult != null) {
+            Long e = mLastResult.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+            if (e != null) {
+                exposureNs = e;
+            }
+        }
+        trigger.updateOptics(focalPx, exposureNs);
+    }
+
     private void setAutoAlgorithmLock(boolean lock) {
         if (mCaptureSession == null || mPreviewRequestBuilder == null) {
             return;

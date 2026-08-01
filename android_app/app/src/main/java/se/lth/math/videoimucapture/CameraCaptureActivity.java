@@ -133,6 +133,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
     private static IMUManager mImuManager;
     private static GnssLogger mGnssLogger;
     private static RecordingWriter sRecordingWriter = new RecordingWriter();
+    private CaptureModeManager mCaptureModeManager;
 
     public CameraSettingsManager getmCameraSettingsManager() {
         return mCameraSettingsManager;
@@ -155,6 +156,9 @@ public class CameraCaptureActivity extends AppCompatActivity {
     public GnssLogger getmGnssLogger() {
         return mGnssLogger;
     }
+    public CaptureModeManager getmCaptureModeManager() {
+        return mCaptureModeManager;
+    }
     public Camera2Proxy getmCamera2Proxy() {
         return mCamera2Proxy;
     }
@@ -175,6 +179,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
 
         mImuManager = new IMUManager(this);
         mGnssLogger = new GnssLogger(this);
+        mCaptureModeManager = new CaptureModeManager(this);
 
         if (savedInstanceState == null) {
             ToolBarFragment fragment = new ToolBarFragment();
@@ -381,17 +386,25 @@ public class CameraCaptureActivity extends AppCompatActivity {
      *   adb shell am start -n se.lth.math.videoimucapture/.CameraCaptureActivity \
      *       --es still_mode exposure --ei still_shots 5 --ef still_stops 2.0 --ez still_raw true
      */
+    public File newCaptureDir(String prefix) {
+        java.text.SimpleDateFormat fmt =
+                new java.text.SimpleDateFormat("yyyy_MM_dd_HH_mm_ss", java.util.Locale.US);
+        File dir = new File(getResultRoot(), prefix + "_" + fmt.format(new java.util.Date()));
+        if (!dir.mkdirs() && !dir.isDirectory()) {
+            Log.e(TAG, "could not create " + dir);
+            return null;
+        }
+        return dir;
+    }
+
     public void captureStills(StillCaptureManager.Mode mode, int shots, float stops,
                               boolean writeRaw) {
         if (mCamera2Proxy == null) {
             Log.w(TAG, "captureStills with no camera");
             return;
         }
-        java.text.SimpleDateFormat fmt =
-                new java.text.SimpleDateFormat("yyyy_MM_dd_HH_mm_ss", java.util.Locale.US);
-        File dir = new File(getResultRoot(), "stills_" + fmt.format(new java.util.Date()));
-        if (!dir.mkdirs() && !dir.isDirectory()) {
-            Log.e(TAG, "could not create " + dir);
+        File dir = newCaptureDir("stills");
+        if (dir == null) {
             return;
         }
         RecordingWriter writer = sRecordingWriter;

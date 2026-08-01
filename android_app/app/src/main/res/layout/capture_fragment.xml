@@ -59,6 +59,34 @@
         app:layout_constraintTop_toTopOf="parent"
         app:tint="@null" />
 
+    <!-- Mode readout: what the camera button will do, and the state of a running
+         capture. The operator should never have to remember which mode is set. -->
+    <com.google.android.material.textview.MaterialTextView
+        android:id="@+id/captureMode_text"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp"
+        android:text="WALK"
+        android:textAppearance="@style/TextAppearance.MyApp.Overlay"
+        app:layout_constraintBottom_toTopOf="@+id/capture_button"
+        app:layout_constraintEnd_toEndOf="@+id/capture_button"
+        app:layout_constraintStart_toStartOf="@+id/capture_button" />
+
+    <!-- The second ability, on one button. Sits beside the record button rather than
+         replacing it: video and stills are different instruments for different jobs. -->
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:id="@+id/capture_button"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="32dp"
+        android:layout_marginBottom="50dp"
+        android:contentDescription="@string/capture_description"
+        android:src="@drawable/ic_capture_still"
+        app:backgroundTint="@color/captureButtonBkg"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toStartOf="@+id/toggleRecording_button"
+        app:tint="@null" />
+
     <com.google.android.material.floatingactionbutton.FloatingActionButton
         android:id="@+id/toggleRecording_button"
         android:layout_width="wrap_content"

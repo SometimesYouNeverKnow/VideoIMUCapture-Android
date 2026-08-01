@@ -10,6 +10,7 @@
     <string name="back_toolbar">Back</string>
 
     <string name="record_description">Toggle recording</string>
+    <string name="capture_description">Capture stills</string>
     <string name="info_toolbar">Information</string>
     <string name="info_dialog_title">Information</string>
     <string name="info_dialog_message">Records Video, IMU and Camera Meta Data to this location:\n %s</string>

@@ -142,6 +142,16 @@ message StillMetaData {
   // stitched from known angles instead of by feature matching.
   repeated float orientation_quaternion = 16;
   int64 orientation_time_ns = 17; // timestamp of the sample actually used
+
+  // Blur the stillness trigger PREDICTED when it decided to fire, in pixels
+  // (focal_px * |omega| * exposure). The IMU stream is written alongside, so the
+  // angular rate at this shot's own time_ns gives the blur ACHIEVED — predicted vs
+  // achieved is the honest measure of whether firing on the downward crossing really
+  // beat the shutter latency, rather than an assumption that it did.
+  float predicted_blur_px = 18;
+  float omega_at_trigger = 19;   // rad/s, the value the prediction used
+  bool trigger_forced = 20;      // fired on the max-interval timeout, never went quiet
+  int32 capture_mode = 21;       // 0 MANUAL, 1 WALK, 2 OBJECT, 3 PANO
 }
 
 // GNSS fix from LocationManager (GPS provider, no fused black box).

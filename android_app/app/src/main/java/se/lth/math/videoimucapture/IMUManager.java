@@ -93,6 +93,10 @@ public class IMUManager extends SensorEventCallback {
     // local iron, and a panorama stitch only needs RELATIVE orientation between shots.
     private volatile float[] mLastOrientation = null;
     private volatile long mLastOrientationTs = 0;
+    // Optional tap on the raw gyro stream, for the stillness shutter. Set from the UI
+    // thread, read on the sensor thread, so volatile rather than synchronised — a
+    // one-sample delay in seeing a new listener is harmless.
+    private volatile StillnessTrigger mStillnessTrigger = null;
     // Idle cap on the sync deques, ~1 s at 200 Hz. Keeps memory bounded while the app
     // sits open and bounds how stale the head of the queue can be at record start.
     private static final int IDLE_QUEUE_CAP = 200;
@@ -182,6 +186,10 @@ public class IMUManager extends SensorEventCallback {
         }
 
         return data;
+    }
+
+    public void setStillnessTrigger(StillnessTrigger trigger) {
+        mStillnessTrigger = trigger;
     }
 
     /** Latest game-rotation-vector sample as (x, y, z, w), or null if none yet. */
@@ -387,6 +395,13 @@ public class IMUManager extends SensorEventCallback {
         } else if (event.sensor.getType() == GYRO_TYPE) {
             SensorPacket sp = new SensorPacket(event.timestamp, event.values.clone());
             mGyroData.add(sp);
+
+            // Runs whether or not a recording is active: the shutter trigger is about
+            // motion, not about whether video is being written.
+            StillnessTrigger trigger = mStillnessTrigger;
+            if (trigger != null) {
+                trigger.onGyro(event.timestamp, event.values);
+            }
 
             // sync data — drain until caught up, not one packet per event, so a
             // transient stall can never turn into a permanent lag.

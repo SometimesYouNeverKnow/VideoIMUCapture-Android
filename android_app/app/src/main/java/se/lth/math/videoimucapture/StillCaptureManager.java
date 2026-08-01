@@ -52,6 +52,9 @@ public class StillCaptureManager {
 
     public enum Mode {SINGLE, EXPOSURE_BRACKET, FOCUS_STACK}
 
+    /** Which operating mode requested the shot; recorded per still. */
+    public enum CaptureMode {MANUAL, WALK, OBJECT, PANO}
+
     /** Reader depth, and therefore the longest burst that can be held in flight. */
     private static final int MAX_BURST = 9;
 
@@ -79,6 +82,12 @@ public class StillCaptureManager {
     private RecordingWriter mRecordingWriter;
     private File mOutputDir;
     private long mBurstId;
+    // Trigger provenance for the next burst, set by WALK mode before it fires.
+    private CaptureMode mCaptureMode = CaptureMode.MANUAL;
+    private float mPredictedBlurPx = 0f;
+    private float mOmegaAtTrigger = 0f;
+    private boolean mTriggerForced = false;
+    private boolean mWriteRawThisBurst = false;
     private Mode mMode = Mode.SINGLE;
     private int mBurstSize;
     private final List<Float> mEvOffsets = new ArrayList<>();
@@ -164,6 +173,15 @@ public class StillCaptureManager {
         return mRawSupported;
     }
 
+    /** Attach trigger provenance to the next burst. */
+    public void setTriggerContext(CaptureMode mode, float predictedBlurPx,
+                                  float omegaRadPerS, boolean forced) {
+        mCaptureMode = mode;
+        mPredictedBlurPx = predictedBlurPx;
+        mOmegaAtTrigger = omegaRadPerS;
+        mTriggerForced = forced;
+    }
+
     public void release() {
         if (mJpegReader != null) {
             mJpegReader.close();
@@ -204,6 +222,7 @@ public class StillCaptureManager {
         mPendingRaw.clear();
         mEvOffsets.clear();
         mShotCounter = 0;
+        mWriteRawThisBurst = writeRaw && mRawReader != null;
 
         List<CaptureRequest> requests = new ArrayList<>();
         for (int i = 0; i < mBurstSize; i++) {
@@ -371,8 +390,15 @@ public class StillCaptureManager {
                 .setBurstIndex(index)
                 .setBurstSize(mBurstSize)
                 .setKindValue(mMode.ordinal())
+                .setCaptureMode(mCaptureMode.ordinal())
+                .setPredictedBlurPx(mPredictedBlurPx)
+                .setOmegaAtTrigger(mOmegaAtTrigger)
+                .setTriggerForced(mTriggerForced)
                 .setJpegFile(stem + ".jpg");
-        if (mRawReader != null) {
+        // Only claim a DNG when one was actually requested for THIS burst. Keying off
+        // "the reader exists" made every WALK frame advertise a sidecar that was never
+        // written — seven claimed, two on disk.
+        if (mWriteRawThisBurst) {
             b.setDngFile(stem + ".dng");
         }
 

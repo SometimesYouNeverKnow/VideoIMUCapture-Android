@@ -5,4 +5,6 @@
     <color name="colorSecondary">#7986CB</color>
     <color name="colorSecondaryVariant">#5C6BC0</color>
     <color name="recordButtonBkg">#FFFFFA</color>
+    <color name="captureButtonBkg">#FFD166</color>
+    <color name="captureButtonActiveBkg">#EF6F6C</color>
 </resources>

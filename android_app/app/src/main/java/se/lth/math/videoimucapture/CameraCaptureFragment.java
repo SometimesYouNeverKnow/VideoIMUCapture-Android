@@ -54,6 +54,8 @@ public class CameraCaptureFragment extends Fragment
     private boolean mRecordingEnabled;      // controls button state
     private FloatingActionButton mRecordingButton;
     private FloatingActionButton mWarningButton;
+    private FloatingActionButton mCaptureButton;
+    private TextView mCaptureModeText;
 
     private int mCameraPreviewWidth, mCameraPreviewHeight;
 
@@ -125,6 +127,24 @@ public class CameraCaptureFragment extends Fragment
         mWarningButton = view.findViewById(R.id.OIS_warning_button);
         mWarningButton.setOnClickListener(this::clickWarning);
 
+        mCaptureButton = view.findViewById(R.id.capture_button);
+        mCaptureModeText = view.findViewById(R.id.captureMode_text);
+        CaptureModeManager modes = ((CameraCaptureActivity) getActivity()).getmCaptureModeManager();
+        mCaptureButton.setOnClickListener(v -> modes.onCaptureButton());
+        // Long-press cycles the mode: three options, no settings screen to open, and it
+        // cannot be hit by accident during a capture.
+        mCaptureButton.setOnLongClickListener(v -> {
+            if (modes.isRunning()) {
+                return false;
+            }
+            CaptureModeManager.Mode[] all = CaptureModeManager.Mode.values();
+            modes.setMode(all[(modes.getMode().ordinal() + 1) % all.length]);
+            updateCaptureMode(modes.getMode().name());
+            return true;
+        });
+        modes.setStateListener(this::onCaptureRunState);
+        updateCaptureMode(modes.getMode().name());
+
         // Configure the GLSurfaceView.  This will start the Renderer thread, with an
         // appropriate EGL context.
         mGLView = view.findViewById(R.id.cameraPreview_surfaceView);
@@ -142,6 +162,26 @@ public class CameraCaptureFragment extends Fragment
 
         mCaptureResultText = view.findViewById(R.id.captureResult_text);
 
+    }
+
+    private void updateCaptureMode(String label) {
+        if (mCaptureModeText != null) {
+            mCaptureModeText.setText(label);
+        }
+    }
+
+    /** Called on the main thread by CaptureModeManager as a run starts and stops. */
+    private void onCaptureRunState(boolean running, String summary) {
+        if (mCaptureButton != null) {
+            mCaptureButton.setImageResource(
+                    running ? R.drawable.ic_capture_stop : R.drawable.ic_capture_still);
+            mCaptureButton.setBackgroundTintList(
+                    android.content.res.ColorStateList.valueOf(
+                            getResources().getColor(running
+                                    ? R.color.captureButtonActiveBkg
+                                    : R.color.captureButtonBkg, null)));
+        }
+        updateCaptureMode(summary);
     }
 
 
