@@ -59,18 +59,64 @@
         app:layout_constraintTop_toTopOf="parent"
         app:tint="@null" />
 
-    <!-- Mode readout: what the camera button will do, and the state of a running
-         capture. The operator should never have to remember which mode is set. -->
-    <com.google.android.material.textview.MaterialTextView
-        android:id="@+id/captureMode_text"
+    <!-- Mode strip: all three visible at once, current one lit, one tap to change.
+         The capture button then has exactly one meaning at any moment and the operator
+         never has to remember hidden state or discover a long-press. -->
+    <LinearLayout
+        android:id="@+id/captureMode_strip"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="16dp"
-        android:text="WALK"
-        android:textAppearance="@style/TextAppearance.MyApp.Overlay"
+        android:layout_marginBottom="12dp"
+        android:orientation="horizontal"
         app:layout_constraintBottom_toTopOf="@+id/capture_button"
-        app:layout_constraintEnd_toEndOf="@+id/capture_button"
-        app:layout_constraintStart_toStartOf="@+id/capture_button" />
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <com.google.android.material.textview.MaterialTextView
+            android:id="@+id/mode_walk"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingStart="18dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="18dp"
+            android:paddingBottom="8dp"
+            android:text="WALK"
+            android:textAppearance="@style/TextAppearance.MyApp.Overlay" />
+
+        <com.google.android.material.textview.MaterialTextView
+            android:id="@+id/mode_object"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingStart="18dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="18dp"
+            android:paddingBottom="8dp"
+            android:text="OBJECT"
+            android:textAppearance="@style/TextAppearance.MyApp.Overlay" />
+
+        <com.google.android.material.textview.MaterialTextView
+            android:id="@+id/mode_pano"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingStart="18dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="18dp"
+            android:paddingBottom="8dp"
+            android:text="PANO"
+            android:textAppearance="@style/TextAppearance.MyApp.Overlay" />
+    </LinearLayout>
+
+    <!-- Transient status, on its own line so it can never overwrite the mode. -->
+    <com.google.android.material.textview.MaterialTextView
+        android:id="@+id/captureStatus_text"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:text=""
+        android:textAppearance="@style/TextAppearance.MyApp.Overlay"
+        app:layout_constraintBottom_toTopOf="@+id/captureMode_strip"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
 
     <!-- The second ability, on one button. Sits beside the record button rather than
          replacing it: video and stills are different instruments for different jobs. -->

@@ -55,7 +55,8 @@ public class CameraCaptureFragment extends Fragment
     private FloatingActionButton mRecordingButton;
     private FloatingActionButton mWarningButton;
     private FloatingActionButton mCaptureButton;
-    private TextView mCaptureModeText;
+    private TextView mCaptureStatusText;
+    private TextView[] mModeViews;
 
     private int mCameraPreviewWidth, mCameraPreviewHeight;
 
@@ -128,22 +129,28 @@ public class CameraCaptureFragment extends Fragment
         mWarningButton.setOnClickListener(this::clickWarning);
 
         mCaptureButton = view.findViewById(R.id.capture_button);
-        mCaptureModeText = view.findViewById(R.id.captureMode_text);
-        CaptureModeManager modes = ((CameraCaptureActivity) getActivity()).getmCaptureModeManager();
+        mCaptureStatusText = view.findViewById(R.id.captureStatus_text);
+        mModeViews = new TextView[]{
+                view.findViewById(R.id.mode_walk),
+                view.findViewById(R.id.mode_object),
+                view.findViewById(R.id.mode_pano),
+        };
+        final CaptureModeManager modes =
+                ((CameraCaptureActivity) getActivity()).getmCaptureModeManager();
         mCaptureButton.setOnClickListener(v -> modes.onCaptureButton());
-        // Long-press cycles the mode: three options, no settings screen to open, and it
-        // cannot be hit by accident during a capture.
-        mCaptureButton.setOnLongClickListener(v -> {
-            if (modes.isRunning()) {
-                return false;
-            }
-            CaptureModeManager.Mode[] all = CaptureModeManager.Mode.values();
-            modes.setMode(all[(modes.getMode().ordinal() + 1) % all.length]);
-            updateCaptureMode(modes.getMode().name());
-            return true;
-        });
+        CaptureModeManager.Mode[] all = CaptureModeManager.Mode.values();
+        for (int i = 0; i < mModeViews.length; i++) {
+            final CaptureModeManager.Mode m = all[i];
+            mModeViews[i].setOnClickListener(v -> {
+                if (modes.isRunning()) {
+                    return;   // a run owns the mode until it ends
+                }
+                modes.setMode(m);
+                highlightMode(modes.getMode());
+            });
+        }
         modes.setStateListener(this::onCaptureRunState);
-        updateCaptureMode(modes.getMode().name());
+        highlightMode(modes.getMode());
 
         // Configure the GLSurfaceView.  This will start the Renderer thread, with an
         // appropriate EGL context.
@@ -164,13 +171,26 @@ public class CameraCaptureFragment extends Fragment
 
     }
 
-    private void updateCaptureMode(String label) {
-        if (mCaptureModeText != null) {
-            mCaptureModeText.setText(label);
+    private void highlightMode(CaptureModeManager.Mode mode) {
+        if (mModeViews == null) {
+            return;
+        }
+        CaptureModeManager.Mode[] all = CaptureModeManager.Mode.values();
+        for (int i = 0; i < mModeViews.length; i++) {
+            boolean on = all[i] == mode;
+            mModeViews[i].setAlpha(on ? 1.0f : 0.45f);
+            mModeViews[i].setTypeface(null, on ? android.graphics.Typeface.BOLD
+                    : android.graphics.Typeface.NORMAL);
         }
     }
 
-    /** Called on the main thread by CaptureModeManager as a run starts and stops. */
+    /**
+     * Called on the main thread by CaptureModeManager as a run starts and stops.
+     *
+     * The summary goes to its OWN line. It used to be written over the mode label, which
+     * left "5 shots" sitting where the mode should be after a run ended — the state
+     * readout permanently replaced by the last thing that happened to it.
+     */
     private void onCaptureRunState(boolean running, String summary) {
         if (mCaptureButton != null) {
             mCaptureButton.setImageResource(
@@ -181,7 +201,24 @@ public class CameraCaptureFragment extends Fragment
                                     ? R.color.captureButtonActiveBkg
                                     : R.color.captureButtonBkg, null)));
         }
-        updateCaptureMode(summary);
+        if (mCaptureStatusText != null) {
+            mCaptureStatusText.setText(summary == null ? "" : summary);
+            if (!running) {
+                // Clear the finished-run summary after a beat so the strip is the only
+                // persistent state on screen.
+                mCaptureStatusText.postDelayed(() -> {
+                    if (mCaptureStatusText != null) {
+                        mCaptureStatusText.setText("");
+                    }
+                }, 4000L);
+            }
+        }
+        // Dim the strip while a run owns the mode, so it reads as unavailable.
+        if (mModeViews != null) {
+            for (TextView v : mModeViews) {
+                v.setEnabled(!running);
+            }
+        }
     }
 
 
