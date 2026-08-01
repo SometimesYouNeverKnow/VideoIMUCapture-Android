@@ -225,8 +225,23 @@ public class StillCaptureManager {
         mStereoWantUw.set(true);
         mStereoWantMain.set(true);
         try {
-            CaptureRequest.Builder b =
-                    device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            // The builder must be created FOR the physical cameras it will address.
+            // setPhysicalCameraKey validates its id against the set the builder was made
+            // with, and a builder from the plain createCaptureRequest has an EMPTY set —
+            // so it threw `Physical camera id: 2 is not valid!`, the whole stereo capture
+            // was abandoned, and the only frames that reached disk were warm-up frames
+            // from the repeating request. Those looked like a stereo pair and were not
+            // one: no per-physical crop, no capture callback, no metadata. The first
+            // attempt at the crop fix never ran at all — it threw before it could be
+            // tested, and the "still cropped" measurement was of the wrong frames.
+            CaptureRequest.Builder b;
+            if (Build.VERSION.SDK_INT >= 28) {
+                java.util.Set<String> ids = new java.util.HashSet<>(
+                        java.util.Arrays.asList(PHYS_ULTRAWIDE, PHYS_MAIN));
+                b = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE, ids);
+            } else {
+                b = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            }
             copyBase(baseRequest, b, false);
             applyFullFieldOfView(b);
             b.addTarget(mStereoUwReader.getSurface());

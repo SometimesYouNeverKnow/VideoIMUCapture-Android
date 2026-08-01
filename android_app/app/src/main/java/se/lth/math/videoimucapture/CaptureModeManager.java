@@ -317,6 +317,14 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
                 return;
             }
         }
+        // OBJECT recorded no IMU and no GNSS at all — measured across every stack from
+        // 07-31 and 08-01: imu=0, gnss=0 in each. startRun() begins those streams for WALK
+        // and PANO and this path simply never did. A tripod composite still wants both: the
+        // stereo pair's baseline is metric but its POSITION is not, the orientation stamped
+        // on each still comes from a stream that was not being written, and a stack shot
+        // beside a walk cannot be tied to it without a shared clock carrying shared motion.
+        mActivity.getmImuManager().startRecording(writer);
+        mActivity.getmGnssLogger().startRecording(writer);
         proxy.lockAutoAlgorithms(true);
         StillCaptureManager scm = proxy.getStillCaptureManager();
         if (scm != null) {
@@ -361,7 +369,12 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
 
         mMain.postDelayed(() -> {
             proxy.lockAutoAlgorithms(false);
+            // Stop the streams this composite started — but only if it owns the session.
+            // If a video recording is running alongside, killing the IMU here would blind
+            // it mid-clip.
             if (ownsWriter) {
+                mActivity.getmImuManager().stopRecording();
+                mActivity.getmGnssLogger().stopRecording();
                 writer.stopRecording();
             }
             notifyState(false, hasStereo ? "OBJECT complete + stereo" : "OBJECT complete");
