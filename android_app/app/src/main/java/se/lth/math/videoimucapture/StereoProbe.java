@@ -131,6 +131,8 @@ public class StereoProbe {
                 }
             }
             o.put("pairs", results);
+            o.put("realistic_combinations",
+                    probeRealistic(manager, device, logicalId, physicals, readers));
         } finally {
             device.close();
             for (ImageReader r : readers) {
@@ -138,6 +140,122 @@ public class StereoProbe {
             }
         }
         return o;
+    }
+
+    /**
+     * The pair test above opens a session containing ONLY the two physical streams,
+     * which is not the session the app actually runs. This asks whether a dual-lens
+     * capture can coexist with the preview and stills already in flight — because if it
+     * cannot, the stereo shot needs its own session and a preview teardown, which is a
+     * very different piece of work.
+     *
+     * Tested largest-first: whichever configuration survives determines the design.
+     */
+    private static JSONArray probeRealistic(CameraManager manager, CameraDevice device,
+                                            String logicalId, List<String> physicals,
+                                            List<ImageReader> readers) throws Exception {
+        JSONArray out = new JSONArray();
+        // Ultrawide + main: the only pair with a published baseline on this device.
+        String uw = physicals.contains("2") ? "2" : physicals.get(0);
+        String main = physicals.contains("5") ? "5" : physicals.get(1);
+
+        StreamConfigurationMap map = manager.getCameraCharacteristics(logicalId)
+                .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+        if (map == null) {
+            return out;
+        }
+        Size maxJpeg = largest(map.getOutputSizes(ImageFormat.JPEG));
+        Size maxRaw = largest(map.getOutputSizes(ImageFormat.RAW_SENSOR));
+        Size preview = new Size(1920, 1080);
+        Size stereo = new Size(1920, 1080);
+
+        String[][] combos = {
+                {"preview+jpeg+raw+2physical", "P", "J", "R", "S"},
+                {"preview+jpeg+2physical", "P", "J", "S"},
+                {"preview+2physical", "P", "S"},
+                {"jpeg+2physical", "J", "S"},
+        };
+        for (String[] combo : combos) {
+            List<OutputConfiguration> configs = new ArrayList<>();
+            try {
+                for (int i = 1; i < combo.length; i++) {
+                    switch (combo[i]) {
+                        case "P": {
+                            ImageReader r = ImageReader.newInstance(preview.getWidth(),
+                                    preview.getHeight(), ImageFormat.YUV_420_888, 2);
+                            readers.add(r);
+                            configs.add(new OutputConfiguration(r.getSurface()));
+                            break;
+                        }
+                        case "J": {
+                            if (maxJpeg == null) continue;
+                            ImageReader r = ImageReader.newInstance(maxJpeg.getWidth(),
+                                    maxJpeg.getHeight(), ImageFormat.JPEG, 2);
+                            readers.add(r);
+                            configs.add(new OutputConfiguration(r.getSurface()));
+                            break;
+                        }
+                        case "R": {
+                            if (maxRaw == null) continue;
+                            ImageReader r = ImageReader.newInstance(maxRaw.getWidth(),
+                                    maxRaw.getHeight(), ImageFormat.RAW_SENSOR, 2);
+                            readers.add(r);
+                            configs.add(new OutputConfiguration(r.getSurface()));
+                            break;
+                        }
+                        case "S": {
+                            for (String pid : new String[]{uw, main}) {
+                                ImageReader r = ImageReader.newInstance(stereo.getWidth(),
+                                        stereo.getHeight(), ImageFormat.YUV_420_888, 2);
+                                readers.add(r);
+                                OutputConfiguration oc = new OutputConfiguration(r.getSurface());
+                                oc.setPhysicalCameraId(pid);
+                                configs.add(oc);
+                            }
+                            break;
+                        }
+                    }
+                }
+                SessionConfiguration sc = new SessionConfiguration(
+                        SessionConfiguration.SESSION_REGULAR, configs, Runnable::run,
+                        new android.hardware.camera2.CameraCaptureSession.StateCallback() {
+                            @Override
+                            public void onConfigured(
+                                    @NonNull android.hardware.camera2.CameraCaptureSession s) {
+                            }
+
+                            @Override
+                            public void onConfigureFailed(
+                                    @NonNull android.hardware.camera2.CameraCaptureSession s) {
+                            }
+                        });
+                JSONObject r = new JSONObject();
+                r.put("combo", combo[0]);
+                r.put("streams", configs.size());
+                r.put("supported", device.isSessionConfigurationSupported(sc));
+                out.put(r);
+            } catch (IllegalArgumentException | UnsupportedOperationException e) {
+                JSONObject r = new JSONObject();
+                r.put("combo", combo[0]);
+                r.put("supported", false);
+                r.put("error", e.getClass().getSimpleName() + ": " + e.getMessage());
+                out.put(r);
+            }
+        }
+        return out;
+    }
+
+    private static Size largest(Size[] sizes) {
+        if (sizes == null || sizes.length == 0) {
+            return null;
+        }
+        Size best = sizes[0];
+        for (Size s : sizes) {
+            if ((long) s.getWidth() * s.getHeight() > (long) best.getWidth() * best.getHeight()) {
+                best = s;
+            }
+        }
+        return best;
     }
 
     private static JSONObject probePair(CameraManager manager, CameraDevice device,

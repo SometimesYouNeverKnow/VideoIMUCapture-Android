@@ -8,6 +8,7 @@ import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureFailure;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.DngCreator;
 import android.hardware.camera2.TotalCaptureResult;
 import android.media.Image;
@@ -59,6 +60,24 @@ public class StillCaptureManager {
     /** Reader depth, and therefore the longest burst that can be held in flight. */
     private static final int MAX_BURST = 9;
 
+    /**
+     * The one pair on this device with a published baseline: ultrawide (physical 2) sits
+     * LENS_POSE_TRANSLATION = 18.02 mm from the main camera (physical 5), and both carry
+     * factory intrinsics. A SIMULTANEOUS pair across a known baseline is metric scale
+     * from a single capture — the quantity a monocular walk cannot produce without
+     * external control, and the reason this stage exists at all.
+     */
+    public static final String PHYS_ULTRAWIDE = "2";
+    public static final String PHYS_MAIN = "5";
+
+    /**
+     * Physical streams are constrained: the probe found YUV at 1920x1080 configures
+     * alongside preview, JPEG and RAW, while larger did not. At 1920 wide the main
+     * camera's factory focal scales to ~1296 px, so an 18.02 mm baseline gives 47 px of
+     * disparity at 0.5 m and 23 px at 1 m — ample across OBJECT mode's working range.
+     */
+    private static final Size STEREO_SIZE = new Size(1920, 1080);
+
     /** Queued per shot so results can be matched to the images they produced. */
     private static class PendingShot {
         final int index;
@@ -81,6 +100,10 @@ public class StillCaptureManager {
     private ImageReader mJpegReader;
     private ImageReader mRawReader;
     private boolean mRawSupported;
+    private ImageReader mStereoUwReader;
+    private ImageReader mStereoMainReader;
+    private boolean mStereoSupported;
+    private volatile long mStereoBurstId;
 
     private RecordingWriter mRecordingWriter;
     private File mOutputDir;
@@ -131,6 +154,267 @@ public class StillCaptureManager {
                     raw.getWidth(), raw.getHeight(), ImageFormat.RAW_SENSOR, MAX_BURST);
             mRawReader.setOnImageAvailableListener(this::onRaw, mHandler);
             Log.d(TAG, "RAW stills at " + raw);
+        }
+        setupStereoReaders();
+    }
+
+    /**
+     * Build the two physical-camera readers, if this is a logical multi-camera that
+     * offers both lenses. Silently absent otherwise — the stereo stage then skips.
+     */
+    private void setupStereoReaders() {
+        if (Build.VERSION.SDK_INT < 28) {
+            return;
+        }
+        java.util.Set<String> physicals = mCharacteristics.getPhysicalCameraIds();
+        if (!physicals.contains(PHYS_ULTRAWIDE) || !physicals.contains(PHYS_MAIN)) {
+            Log.i(TAG, "no ultrawide+main physical pair; stereo stage disabled");
+            return;
+        }
+        mStereoUwReader = ImageReader.newInstance(STEREO_SIZE.getWidth(),
+                STEREO_SIZE.getHeight(), ImageFormat.YUV_420_888, 2);
+        mStereoUwReader.setOnImageAvailableListener(
+                r -> onStereoImage(r, PHYS_ULTRAWIDE, "uw"), mHandler);
+        mStereoMainReader = ImageReader.newInstance(STEREO_SIZE.getWidth(),
+                STEREO_SIZE.getHeight(), ImageFormat.YUV_420_888, 2);
+        mStereoMainReader.setOnImageAvailableListener(
+                r -> onStereoImage(r, PHYS_MAIN, "main"), mHandler);
+        mStereoSupported = true;
+        Log.d(TAG, "stereo pair ready at " + STEREO_SIZE);
+    }
+
+    public boolean stereoSupported() {
+        return mStereoSupported;
+    }
+
+    /** Surfaces that must be bound to a physical id in the session configuration. */
+    public java.util.Map<String, android.view.Surface> getStereoSurfaces() {
+        java.util.LinkedHashMap<String, android.view.Surface> out = new java.util.LinkedHashMap<>();
+        if (mStereoSupported) {
+            out.put(PHYS_ULTRAWIDE, mStereoUwReader.getSurface());
+            out.put(PHYS_MAIN, mStereoMainReader.getSurface());
+        }
+        return out;
+    }
+
+    /**
+     * One frame from each lens, in a single request, so both shutters open together.
+     * Simultaneity is the whole point: a pair taken sequentially across a moving
+     * handheld camera has an unknown baseline, which is exactly what the factory
+     * 18.02 mm was going to supply.
+     */
+    public void captureStereoPair(CameraDevice device, CameraCaptureSession session,
+                                  CaptureRequest.Builder baseRequest, File outputDir,
+                                  RecordingWriter writer) {
+        if (!mStereoSupported || session == null) {
+            Log.w(TAG, "stereo capture requested but unavailable");
+            return;
+        }
+        mOutputDir = outputDir;
+        mRecordingWriter = writer;
+        mStereoBurstId = SystemClock.elapsedRealtimeNanos();
+        // Arm exactly one frame per lens; every other warm-up frame is drained and
+        // discarded.
+        mStereoWantUw.set(true);
+        mStereoWantMain.set(true);
+        try {
+            CaptureRequest.Builder b =
+                    device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            copyBase(baseRequest, b);
+            b.addTarget(mStereoUwReader.getSurface());
+            b.addTarget(mStereoMainReader.getSurface());
+            session.capture(b.build(), mStereoCallback, mHandler);
+            Log.i(TAG, "stereo pair requested (physical " + PHYS_ULTRAWIDE
+                    + " + " + PHYS_MAIN + ")");
+        } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
+            Log.e(TAG, "stereo capture failed: " + e);
+        }
+    }
+
+    private final CameraCaptureSession.CaptureCallback mStereoCallback =
+            new CameraCaptureSession.CaptureCallback() {
+                @Override
+                public void onCaptureCompleted(@NonNull CameraCaptureSession session,
+                                               @NonNull CaptureRequest request,
+                                               @NonNull TotalCaptureResult result) {
+                    // Both metadata rows are written HERE, not in the image handlers.
+                    // The images arrive first — measured: the pair landed with
+                    // exposure 0, iso 0 and timestamp 0 because the handlers ran before
+                    // this callback, the same race that broke DNG writing. The
+                    // filenames are deterministic from the burst id, so nothing has to
+                    // wait for the pixels.
+                    writeStereoMeta(result, PHYS_ULTRAWIDE, "uw", 0);
+                    writeStereoMeta(result, PHYS_MAIN, "main", 1);
+                }
+            };
+
+    private volatile long mStereoResultTimeNs;
+    private volatile long mStereoExposureNs;
+    private volatile int mStereoIso;
+    private final java.util.concurrent.atomic.AtomicBoolean mStereoWantUw =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicBoolean mStereoWantMain =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    private void onStereoImage(ImageReader reader, String physicalId, String tag) {
+        final byte[] jpeg;
+        try (Image image = reader.acquireNextImage()) {
+            if (image == null) {
+                return;
+            }
+            // The warm-up runs a REPEATING request so the second sensor spins up, which
+            // means frames stream in continuously before and after the shot we want.
+            // They still have to be acquired and released or the reader stalls — but
+            // only the armed frame is kept. Without this every warm-up frame overwrote
+            // the output, which is what the first run did: a dozen writes to two names.
+            boolean armed = PHYS_ULTRAWIDE.equals(physicalId)
+                    ? mStereoWantUw.compareAndSet(true, false)
+                    : mStereoWantMain.compareAndSet(true, false);
+            if (!armed) {
+                return;
+            }
+            jpeg = yuvToJpeg(image);
+        } catch (IllegalStateException e) {
+            Log.e(TAG, "stereo acquire failed: " + e);
+            return;
+        }
+        if (jpeg == null) {
+            return;
+        }
+        final String name = String.format(java.util.Locale.US, "stereo_%d_%s.jpg",
+                mStereoBurstId, tag);
+        final File out = new File(mOutputDir, name);
+        mIo.execute(() -> {
+            try (FileOutputStream s = new FileOutputStream(out)) {
+                s.write(jpeg);
+                Log.d(TAG, "wrote " + name + " (" + jpeg.length / 1024 + " kB)");
+            } catch (IOException e) {
+                Log.e(TAG, "stereo write failed: " + e);
+            }
+        });
+
+    }
+
+    private void writeStereoMeta(TotalCaptureResult result, String physicalId,
+                                 String tag, int index) {
+        if (mRecordingWriter == null) {
+            return;
+        }
+        RecordingProtos.StillMetaData.Builder b =
+                RecordingProtos.StillMetaData.newBuilder()
+                        .setBurstId(mStereoBurstId)
+                        .setBurstSize(2)
+                        .setBurstIndex(index)
+                        .setKindValue(Mode.SINGLE.ordinal())
+                        .setCaptureMode(CaptureMode.OBJECT.ordinal())
+                        .setPhysicalCameraId(physicalId)
+                        .setJpegFile(String.format(java.util.Locale.US,
+                                "stereo_%d_%s.jpg", mStereoBurstId, tag));
+
+        // Prefer this lens's OWN physical result where the device supplies one: the two
+        // sensors can be exposed independently, so the logical result's exposure is not
+        // necessarily either lens's.
+        CaptureResult per = result;
+        if (Build.VERSION.SDK_INT >= 28) {
+            java.util.Map<String, CaptureResult> physResults =
+                    result.getPhysicalCameraResults();
+            CaptureResult pr = physResults.get(physicalId);
+            if (pr != null) {
+                per = pr;
+            }
+        }
+        Long ts = per.get(CaptureResult.SENSOR_TIMESTAMP);
+        if (ts != null) {
+            b.setTimeNs(ts);
+        }
+        Long exp = per.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+        if (exp != null) {
+            b.setExposureTimeNs(exp);
+        }
+        Integer iso = per.get(CaptureResult.SENSOR_SENSITIVITY);
+        if (iso != null) {
+            b.setIso(iso);
+        }
+        Float fl = per.get(CaptureResult.LENS_FOCAL_LENGTH);
+        if (fl != null) {
+            b.setFocalLengthMm(fl);
+        }
+        Float fd = per.get(CaptureResult.LENS_FOCUS_DISTANCE);
+        if (fd != null) {
+            b.setFocusDistanceDiopters(fd);
+        }
+        Integer flash = result.get(TotalCaptureResult.FLASH_MODE);
+        b.setTorchOn(flash != null
+                && flash == android.hardware.camera2.CameraMetadata.FLASH_MODE_TORCH);
+
+        if (mImuManager != null) {
+            float[] q = mImuManager.getLatestOrientation();
+            if (q != null) {
+                for (float v : q) {
+                    b.addOrientationQuaternion(v);
+                }
+                b.setOrientationTimeNs(mImuManager.getLatestOrientationTimeNs());
+            }
+        }
+        mRecordingWriter.queueData(b.build());
+    }
+
+    /**
+     * YUV_420_888 -> NV21 -> JPEG.
+     *
+     * The plane layout is not fixed by the format: chroma may arrive planar
+     * (pixelStride 1) or already semi-planar (pixelStride 2), and every plane carries a
+     * rowStride that need not equal the width. Assuming either would produce a picture
+     * that looks almost right, which is the worst kind of wrong.
+     */
+    private static byte[] yuvToJpeg(Image image) {
+        try {
+            int w = image.getWidth();
+            int h = image.getHeight();
+            Image.Plane[] p = image.getPlanes();
+            byte[] nv21 = new byte[w * h * 3 / 2];
+
+            ByteBuffer y = p[0].getBuffer();
+            int yRow = p[0].getRowStride();
+            int yPix = p[0].getPixelStride();
+            int o = 0;
+            if (yRow == w && yPix == 1) {
+                y.get(nv21, 0, w * h);
+                o = w * h;
+            } else {
+                byte[] row = new byte[yRow];
+                for (int r = 0; r < h; r++) {
+                    y.position(r * yRow);
+                    int n = Math.min(yRow, y.remaining());
+                    y.get(row, 0, n);
+                    for (int c = 0; c < w; c++) {
+                        nv21[o++] = row[c * yPix];
+                    }
+                }
+            }
+
+            // NV21 chroma is interleaved V then U, at half resolution.
+            ByteBuffer u = p[1].getBuffer();
+            ByteBuffer v = p[2].getBuffer();
+            int uRow = p[1].getRowStride(), uPix = p[1].getPixelStride();
+            int vRow = p[2].getRowStride(), vPix = p[2].getPixelStride();
+            for (int r = 0; r < h / 2; r++) {
+                for (int c = 0; c < w / 2; c++) {
+                    int vi = r * vRow + c * vPix;
+                    int ui = r * uRow + c * uPix;
+                    nv21[o++] = vi < v.limit() ? v.get(vi) : 0;
+                    nv21[o++] = ui < u.limit() ? u.get(ui) : 0;
+                }
+            }
+
+            android.graphics.YuvImage yuv =
+                    new android.graphics.YuvImage(nv21, ImageFormat.NV21, w, h, null);
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            yuv.compressToJpeg(new android.graphics.Rect(0, 0, w, h), 95, bos);
+            return bos.toByteArray();
+        } catch (Exception e) {
+            Log.e(TAG, "YUV->JPEG failed: " + e);
+            return null;
         }
     }
 
@@ -221,6 +505,15 @@ public class StillCaptureManager {
             mRawReader.close();
             mRawReader = null;
         }
+        if (mStereoUwReader != null) {
+            mStereoUwReader.close();
+            mStereoUwReader = null;
+        }
+        if (mStereoMainReader != null) {
+            mStereoMainReader.close();
+            mStereoMainReader = null;
+        }
+        mStereoSupported = false;
     }
 
     /**

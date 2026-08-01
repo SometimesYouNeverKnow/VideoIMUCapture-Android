@@ -116,6 +116,67 @@ public class Camera2Proxy {
         return mStillCaptureManager;
     }
 
+    /**
+     * One simultaneous frame from each of the ultrawide and main lenses.
+     *
+     * WARM-UP IS REQUIRED, and finding that out cost a capture. A logical multi-camera
+     * does not keep every physical sensor running — only the ones feeding current
+     * output. Firing a one-shot request at an idle physical stream returns
+     * ERROR_CAMERA_BUFFER (errorCode 5) for it: measured here as errorStreamId=3, and
+     * the pair came back with the main frame present and the ultrawide missing.
+     *
+     * So the physical streams are added to the REPEATING request first, which starts
+     * the second sensor and lets its exposure settle, and only then is the pair
+     * captured. The normal preview request is restored afterwards so two sensors are
+     * not left running — that is real power and heat for a capability used once per
+     * composite.
+     */
+    public void captureStereoPair(File outputDir, RecordingWriter writer) {
+        if (mStillCaptureManager == null || !mStillCaptureManager.stereoSupported()
+                || mCaptureSession == null || mPreviewRequestBuilder == null) {
+            return;
+        }
+        try {
+            CaptureRequest.Builder warm =
+                    mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+            // Copy the preview's settings so the pair is exposed like everything else in
+            // the composite, then add the preview surface plus both physical streams.
+            for (CaptureRequest.Key key : new CaptureRequest.Key[]{
+                    CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_AE_MODE,
+                    CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AF_MODE,
+                    CaptureRequest.CONTROL_AE_LOCK, CaptureRequest.CONTROL_AWB_LOCK,
+                    CaptureRequest.SENSOR_EXPOSURE_TIME, CaptureRequest.SENSOR_SENSITIVITY,
+                    CaptureRequest.FLASH_MODE, CaptureRequest.LENS_FOCUS_DISTANCE}) {
+                Object v = mPreviewRequestBuilder.get(key);
+                if (v != null) {
+                    warm.set(key, v);
+                }
+            }
+            warm.addTarget(mPreviewSurface);
+            for (Surface s : mStillCaptureManager.getStereoSurfaces().values()) {
+                warm.addTarget(s);
+            }
+            mCaptureSession.setRepeatingRequest(
+                    warm.build(), mSessionCaptureCallback, mBackgroundHandler);
+            Log.d(TAG, "stereo warm-up streaming");
+
+            mBackgroundHandler.postDelayed(() -> mStillCaptureManager.captureStereoPair(
+                    mCameraDevice, mCaptureSession, mPreviewRequestBuilder,
+                    outputDir, writer), 900L);
+            mBackgroundHandler.postDelayed(() -> {
+                try {
+                    mCaptureSession.setRepeatingRequest(mPreviewRequestBuilder.build(),
+                            mSessionCaptureCallback, mBackgroundHandler);
+                    Log.d(TAG, "stereo warm-up ended, preview restored");
+                } catch (CameraAccessException | IllegalStateException e) {
+                    Log.w(TAG, "could not restore preview: " + e);
+                }
+            }, 2200L);
+        } catch (CameraAccessException | IllegalStateException e) {
+            Log.e(TAG, "stereo warm-up failed: " + e);
+        }
+    }
+
     public void startRecordingCaptureResult(RecordingWriter recordingWriter) {
         mRecordingWriter = recordingWriter;
         mRecordingMetadata = true;
@@ -381,6 +442,15 @@ public class Camera2Proxy {
                 outputs.add(outputConfiguration);
                 for (Surface s : stillSurfaces) {
                     outputs.add(new OutputConfiguration(s));
+                }
+                // Physical-camera streams for the simultaneous stereo pair. The probe
+                // confirmed preview+JPEG+RAW+2 physical configures on this device, so
+                // they can live in the main session rather than needing their own.
+                for (java.util.Map.Entry<String, Surface> e
+                        : mStillCaptureManager.getStereoSurfaces().entrySet()) {
+                    OutputConfiguration oc = new OutputConfiguration(e.getValue());
+                    oc.setPhysicalCameraId(e.getKey());
+                    outputs.add(oc);
                 }
                 mCameraDevice.createCaptureSession(new SessionConfiguration(
                         SessionConfiguration.SESSION_REGULAR,

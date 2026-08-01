@@ -260,20 +260,33 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
                     false, dir, writer);
         }, 3000L);
 
-        final boolean ownsWriter = owns;
         mMain.postDelayed(() -> {
             notifyState(true, "OBJECT: full-quality RAW");
             proxy.captureStills(StillCaptureManager.Mode.SINGLE, 1, 0f, true, dir, writer);
         }, 6000L);
+
+        // The stereo pair. Last, because it is the one stage whose value does not
+        // degrade if the operator has already drifted — both frames are simultaneous,
+        // so the 18.02 mm baseline between them holds regardless of what the hand did
+        // before it. Everything else in this composite is monocular and therefore
+        // scale-free; this is the stage that makes the capture metric.
+        final boolean ownsWriter = owns;
+        final boolean hasStereo = scm != null && scm.stereoSupported();
+        if (hasStereo) {
+            mMain.postDelayed(() -> {
+                notifyState(true, "OBJECT: stereo pair (metric scale)");
+                proxy.captureStereoPair(dir, writer);
+            }, 9000L);
+        }
 
         mMain.postDelayed(() -> {
             proxy.lockAutoAlgorithms(false);
             if (ownsWriter) {
                 writer.stopRecording();
             }
-            notifyState(false, "OBJECT complete");
+            notifyState(false, hasStereo ? "OBJECT complete + stereo" : "OBJECT complete");
             Log.i(TAG, "object composite complete: " + dir);
-        }, 9500L);
+        }, hasStereo ? 14500L : 9500L);   // stereo adds a warm-up before its capture
     }
 
     private void notifyState(boolean running, String summary) {
