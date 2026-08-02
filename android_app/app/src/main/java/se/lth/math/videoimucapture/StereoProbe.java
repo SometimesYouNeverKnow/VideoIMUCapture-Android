@@ -13,6 +13,7 @@ import android.media.ImageReader;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.text.TextUtils;
 import android.util.Log;
 import android.util.Size;
 
@@ -123,14 +124,26 @@ public class StereoProbe {
         }
         List<ImageReader> readers = new ArrayList<>();
         try {
+            // Arities 2..N. Pairs answer "can we do stereo"; triples and quads answer
+            // "can we do stereo TWICE AT ONCE", which is the only way a single shutter
+            // produces a measurement and an independent check of it.
             JSONArray results = new JSONArray();
-            for (int i = 0; i < physicals.size(); i++) {
-                for (int j = i + 1; j < physicals.size(); j++) {
-                    results.put(probePair(manager, device, physicals.get(i), physicals.get(j),
-                            readers));
+            JSONObject byArity = new JSONObject();
+            for (int k = 2; k <= physicals.size(); k++) {
+                int supported = 0;
+                int tried = 0;
+                for (List<String> combo : combinations(physicals, k)) {
+                    JSONObject r = probeCombo(manager, device, combo);
+                    results.put(r);
+                    tried++;
+                    if (r.optBoolean("supported")) {
+                        supported++;
+                    }
                 }
+                byArity.put(String.valueOf(k), supported + "/" + tried + " supported");
             }
-            o.put("pairs", results);
+            o.put("combos", results);
+            o.put("combos_by_arity", byArity);
             o.put("realistic_combinations",
                     probeRealistic(manager, device, logicalId, physicals, readers));
         } finally {
@@ -155,9 +168,24 @@ public class StereoProbe {
                                             String logicalId, List<String> physicals,
                                             List<ImageReader> readers) throws Exception {
         JSONArray out = new JSONArray();
-        // Ultrawide + main: the only pair with a published baseline on this device.
-        String uw = physicals.contains("2") ? "2" : physicals.get(0);
-        String main = physicals.contains("5") ? "5" : physicals.get(1);
+
+        // Ordered so the calibrated pair leads: 2+5 is the only pair with a published
+        // LENS_POSE_TRANSLATION, so any larger set should contain it — a third and fourth lens
+        // are only worth having if the metric one is still in the shot to tie them to.
+        List<String> ordered = new ArrayList<>();
+        for (String pref : new String[]{"2", "5", "6", "7"}) {
+            if (physicals.contains(pref)) {
+                ordered.add(pref);
+            }
+        }
+        for (String p : physicals) {
+            if (!ordered.contains(p)) {
+                ordered.add(p);
+            }
+        }
+        if (ordered.size() < 2) {
+            return out;
+        }
 
         StreamConfigurationMap map = manager.getCameraCharacteristics(logicalId)
                 .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
@@ -169,77 +197,94 @@ public class StereoProbe {
         Size preview = new Size(1920, 1080);
         Size stereo = new Size(1920, 1080);
 
-        String[][] combos = {
-                {"preview+jpeg+raw+2physical", "P", "J", "R", "S"},
-                {"preview+jpeg+2physical", "P", "J", "S"},
-                {"preview+2physical", "P", "S"},
-                {"jpeg+2physical", "J", "S"},
+        String[][] shapes = {
+                {"preview+jpeg+raw", "P", "J", "R", "S"},
+                {"preview+jpeg", "P", "J", "S"},
+                {"preview", "P", "S"},
+                {"jpeg", "J", "S"},
         };
-        for (String[] combo : combos) {
-            List<OutputConfiguration> configs = new ArrayList<>();
-            try {
-                for (int i = 1; i < combo.length; i++) {
-                    switch (combo[i]) {
-                        case "P": {
-                            ImageReader r = ImageReader.newInstance(preview.getWidth(),
-                                    preview.getHeight(), ImageFormat.YUV_420_888, 2);
-                            readers.add(r);
-                            configs.add(new OutputConfiguration(r.getSurface()));
-                            break;
-                        }
-                        case "J": {
-                            if (maxJpeg == null) continue;
-                            ImageReader r = ImageReader.newInstance(maxJpeg.getWidth(),
-                                    maxJpeg.getHeight(), ImageFormat.JPEG, 2);
-                            readers.add(r);
-                            configs.add(new OutputConfiguration(r.getSurface()));
-                            break;
-                        }
-                        case "R": {
-                            if (maxRaw == null) continue;
-                            ImageReader r = ImageReader.newInstance(maxRaw.getWidth(),
-                                    maxRaw.getHeight(), ImageFormat.RAW_SENSOR, 2);
-                            readers.add(r);
-                            configs.add(new OutputConfiguration(r.getSurface()));
-                            break;
-                        }
-                        case "S": {
-                            for (String pid : new String[]{uw, main}) {
-                                ImageReader r = ImageReader.newInstance(stereo.getWidth(),
-                                        stereo.getHeight(), ImageFormat.YUV_420_888, 2);
-                                readers.add(r);
-                                OutputConfiguration oc = new OutputConfiguration(r.getSurface());
-                                oc.setPhysicalCameraId(pid);
-                                configs.add(oc);
+        // Arity 2 is the session the app runs today. 3 and 4 are the question: a full-res JPEG
+        // and a RAW alongside FOUR physical streams is seven surfaces, and the guaranteed
+        // stream combinations run out long before that.
+        for (int nPhys = 2; nPhys <= ordered.size(); nPhys++) {
+            List<String> chosen = new ArrayList<>(ordered.subList(0, nPhys));
+            for (String[] shape : shapes) {
+                List<OutputConfiguration> configs = new ArrayList<>();
+                List<ImageReader> local = new ArrayList<>();
+                String label = shape[0] + "+" + nPhys + "physical";
+                try {
+                    for (int i = 1; i < shape.length; i++) {
+                        switch (shape[i]) {
+                            case "P": {
+                                ImageReader r = ImageReader.newInstance(preview.getWidth(),
+                                        preview.getHeight(), ImageFormat.YUV_420_888, 2);
+                                local.add(r);
+                                configs.add(new OutputConfiguration(r.getSurface()));
+                                break;
                             }
-                            break;
+                            case "J": {
+                                if (maxJpeg == null) continue;
+                                ImageReader r = ImageReader.newInstance(maxJpeg.getWidth(),
+                                        maxJpeg.getHeight(), ImageFormat.JPEG, 2);
+                                local.add(r);
+                                configs.add(new OutputConfiguration(r.getSurface()));
+                                break;
+                            }
+                            case "R": {
+                                if (maxRaw == null) continue;
+                                ImageReader r = ImageReader.newInstance(maxRaw.getWidth(),
+                                        maxRaw.getHeight(), ImageFormat.RAW_SENSOR, 2);
+                                local.add(r);
+                                configs.add(new OutputConfiguration(r.getSurface()));
+                                break;
+                            }
+                            case "S": {
+                                for (String pid : chosen) {
+                                    ImageReader r = ImageReader.newInstance(stereo.getWidth(),
+                                            stereo.getHeight(), ImageFormat.YUV_420_888, 2);
+                                    local.add(r);
+                                    OutputConfiguration oc =
+                                            new OutputConfiguration(r.getSurface());
+                                    oc.setPhysicalCameraId(pid);
+                                    configs.add(oc);
+                                }
+                                break;
+                            }
                         }
                     }
-                }
-                SessionConfiguration sc = new SessionConfiguration(
-                        SessionConfiguration.SESSION_REGULAR, configs, Runnable::run,
-                        new android.hardware.camera2.CameraCaptureSession.StateCallback() {
-                            @Override
-                            public void onConfigured(
-                                    @NonNull android.hardware.camera2.CameraCaptureSession s) {
-                            }
+                    SessionConfiguration sc = new SessionConfiguration(
+                            SessionConfiguration.SESSION_REGULAR, configs, Runnable::run,
+                            new android.hardware.camera2.CameraCaptureSession.StateCallback() {
+                                @Override
+                                public void onConfigured(
+                                        @NonNull android.hardware.camera2.CameraCaptureSession s) {
+                                }
 
-                            @Override
-                            public void onConfigureFailed(
-                                    @NonNull android.hardware.camera2.CameraCaptureSession s) {
-                            }
-                        });
-                JSONObject r = new JSONObject();
-                r.put("combo", combo[0]);
-                r.put("streams", configs.size());
-                r.put("supported", device.isSessionConfigurationSupported(sc));
-                out.put(r);
-            } catch (IllegalArgumentException | UnsupportedOperationException e) {
-                JSONObject r = new JSONObject();
-                r.put("combo", combo[0]);
-                r.put("supported", false);
-                r.put("error", e.getClass().getSimpleName() + ": " + e.getMessage());
-                out.put(r);
+                                @Override
+                                public void onConfigureFailed(
+                                        @NonNull android.hardware.camera2.CameraCaptureSession s) {
+                                }
+                            });
+                    JSONObject r = new JSONObject();
+                    r.put("combo", label);
+                    r.put("physicals", TextUtils.join("+", chosen));
+                    r.put("streams", configs.size());
+                    r.put("supported", device.isSessionConfigurationSupported(sc));
+                    out.put(r);
+                } catch (IllegalArgumentException | UnsupportedOperationException e) {
+                    JSONObject r = new JSONObject();
+                    r.put("combo", label);
+                    r.put("physicals", TextUtils.join("+", chosen));
+                    r.put("supported", false);
+                    r.put("error", e.getClass().getSimpleName() + ": " + e.getMessage());
+                    out.put(r);
+                } finally {
+                    // A full-res RAW reader is ~25 MB; twelve of these combinations held open
+                    // at once would fail the later ones for reasons that are not the camera's.
+                    for (ImageReader r : local) {
+                        r.close();
+                    }
+                }
             }
         }
         return out;
@@ -258,35 +303,58 @@ public class StereoProbe {
         return best;
     }
 
-    private static JSONObject probePair(CameraManager manager, CameraDevice device,
-                                        String idA, String idB, List<ImageReader> readers)
-            throws Exception {
+    /**
+     * Ask whether N physical streams configure simultaneously, for any N.
+     *
+     * Generalised from the pairs-only version 2026-08-02. The question is whether this
+     * device can give more than two lenses at one shutter, because a SECOND baseline is
+     * what turns a stereo measurement into a checkable one: this device publishes
+     * LENS_POSE_TRANSLATION for the ultrawide alone ([0, 0.018018510, 0] — 18.02 mm on Y
+     * and nothing else), so every other pair is scale-free until it is calibrated against
+     * that one. Two simultaneous pairs would let each capture check itself.
+     *
+     * Note the readers are closed PER COMBINATION rather than accumulated. With 6 pairs,
+     * 4 triples and a quad, each retried across several candidate sizes, holding every
+     * ImageReader open to the end would run to hundreds of megabytes of buffers and could
+     * fail the later, larger combinations for reasons that have nothing to do with the
+     * camera. isSessionConfigurationSupported() is synchronous and does not retain the
+     * surfaces, so releasing them immediately is safe.
+     */
+    private static JSONObject probeCombo(CameraManager manager, CameraDevice device,
+                                         List<String> ids) throws Exception {
         JSONObject o = new JSONObject();
-        o.put("pair", idA + "+" + idB);
+        o.put("combo", TextUtils.join("+", ids));
+        o.put("n_lenses", ids.size());
         String supportedAt = null;
         String lastError = null;
 
         for (Size size : CANDIDATE_SIZES) {
-            // Both physicals must actually offer the size, or the answer is meaningless.
-            if (!offersSize(manager, idA, size) || !offersSize(manager, idB, size)) {
+            // Every physical must actually offer the size, or the answer is meaningless.
+            boolean allOffer = true;
+            for (String id : ids) {
+                if (!offersSize(manager, id, size)) {
+                    allOffer = false;
+                    break;
+                }
+            }
+            if (!allOffer) {
                 continue;
             }
+            List<ImageReader> local = new ArrayList<>();
             try {
-                ImageReader ra = ImageReader.newInstance(
-                        size.getWidth(), size.getHeight(), ImageFormat.YUV_420_888, 2);
-                ImageReader rb = ImageReader.newInstance(
-                        size.getWidth(), size.getHeight(), ImageFormat.YUV_420_888, 2);
-                readers.add(ra);
-                readers.add(rb);
-
-                OutputConfiguration ca = new OutputConfiguration(ra.getSurface());
-                ca.setPhysicalCameraId(idA);
-                OutputConfiguration cb = new OutputConfiguration(rb.getSurface());
-                cb.setPhysicalCameraId(idB);
+                List<OutputConfiguration> configs = new ArrayList<>();
+                for (String id : ids) {
+                    ImageReader r = ImageReader.newInstance(
+                            size.getWidth(), size.getHeight(), ImageFormat.YUV_420_888, 2);
+                    local.add(r);
+                    OutputConfiguration c = new OutputConfiguration(r.getSurface());
+                    c.setPhysicalCameraId(id);
+                    configs.add(c);
+                }
 
                 SessionConfiguration config = new SessionConfiguration(
                         SessionConfiguration.SESSION_REGULAR,
-                        Arrays.asList(ca, cb),
+                        configs,
                         Runnable::run,
                         new android.hardware.camera2.CameraCaptureSession.StateCallback() {
                             @Override
@@ -302,10 +370,16 @@ public class StereoProbe {
 
                 if (device.isSessionConfigurationSupported(config)) {
                     supportedAt = size.toString();
-                    break;
                 }
             } catch (IllegalArgumentException | UnsupportedOperationException e) {
                 lastError = e.getClass().getSimpleName() + ": " + e.getMessage();
+            } finally {
+                for (ImageReader r : local) {
+                    r.close();
+                }
+            }
+            if (supportedAt != null) {
+                break;
             }
         }
         o.put("supported", supportedAt != null);
@@ -316,6 +390,37 @@ public class StereoProbe {
             o.put("last_error", lastError);
         }
         return o;
+    }
+
+    /** Every combination of {@code k} ids drawn from {@code ids}, in stable order. */
+    private static List<List<String>> combinations(List<String> ids, int k) {
+        List<List<String>> out = new ArrayList<>();
+        int n = ids.size();
+        if (k > n || k <= 0) {
+            return out;
+        }
+        int[] idx = new int[k];
+        for (int i = 0; i < k; i++) {
+            idx[i] = i;
+        }
+        while (true) {
+            List<String> combo = new ArrayList<>();
+            for (int i : idx) {
+                combo.add(ids.get(i));
+            }
+            out.add(combo);
+            int i = k - 1;
+            while (i >= 0 && idx[i] == n - k + i) {
+                i--;
+            }
+            if (i < 0) {
+                return out;
+            }
+            idx[i]++;
+            for (int j = i + 1; j < k; j++) {
+                idx[j] = idx[j - 1] + 1;
+            }
+        }
     }
 
     private static boolean offersSize(CameraManager manager, String id, Size size) {
