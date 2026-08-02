@@ -241,6 +241,19 @@ public class CameraCensus {
             o.put("CONTROL_AE_COMPENSATION_STEP",
                     String.valueOf(ch.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)));
         }
+        // The widest field of view this camera will give us, and the single most consequential
+        // number for the stereo pair. Added 2026-08-02: it was NOT recorded, so when every
+        // stereo pair turned out to be main-framed there was nothing in the census to say what
+        // the alternative even was — the ultrawide's 0.6 had to be recovered from the ratio of
+        // factory focals (1651.15/2755.65 = 0.599) and from the operator changing the setting
+        // by hand. The LOWER bound is the wide end; 1.0 is main-camera framing, not neutral.
+        if (Build.VERSION.SDK_INT >= 30) {
+            Range<Float> zoomRange = ch.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+            if (zoomRange != null) {
+                o.put("CONTROL_ZOOM_RATIO_RANGE", zoomRange.toString());
+                o.put("CONTROL_ZOOM_RATIO_WIDEST", (double) zoomRange.getLower());
+            }
+        }
         putValue(o, "FLASH_INFO_AVAILABLE", ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE));
         if (Build.VERSION.SDK_INT >= 33) {
             putValue(o, "FLASH_INFO_STRENGTH_MAXIMUM_LEVEL",

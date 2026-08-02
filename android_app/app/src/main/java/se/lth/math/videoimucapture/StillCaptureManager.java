@@ -673,18 +673,46 @@ public class StillCaptureManager {
     }
 
     /**
-     * Give each physical stream its OWN sensor's full array, and pin the logical zoom to
-     * 1.0, so nothing between the request and the readout has licence to narrow the wide
-     * lens. Both are set explicitly rather than left at the default: a default is whatever
-     * the HAL last had, and the whole point of the ultrawide in this pair is the part of
-     * the scene the main camera cannot see.
+     * Give each physical stream its OWN sensor's full array, and open the logical zoom to the
+     * WIDEST ratio the device offers, so nothing between the request and the readout narrows
+     * the wide lens.
+     *
+     * CORRECTED 2026-08-02, and the earlier version of this method was the bug it claimed to
+     * fix. It pinned CONTROL_ZOOM_RATIO to 1.0f and called that "no zoom". On a logical
+     * multi-camera 1.0 is not neutral — it is main-camera framing BY DEFINITION, because the
+     * ratio is expressed relative to the logical camera's default field of view. Ratios below
+     * 1.0 are what widen it onto the ultrawide. This device's own numbers say so exactly:
+     * factory fx is 1651.15 (ultrawide) against 2755.65 (main), and 1651.15/2755.65 = 0.599.
+     * So 0.6 IS the ultrawide's native field of view, and 1.0 asks the HAL to crop it away.
+     * The operator found this from the other end, by setting the app's zoom_ratio preference
+     * to 0.6 and watching the full sensor appear.
+     *
+     * Worse, the old code read CONTROL_ZOOM_RATIO_RANGE, confirmed its lower bound could go
+     * below 1.0, and then pinned 1.0 anyway — and from API 30 the zoom ratio governs, so it
+     * overrode the per-physical crop regions set immediately below it.
+     *
+     * MEASURED CONSEQUENCE: all 40 stereo pairs in data/capture_raw/s24u_20260801 that
+     * recorded a zoom ratio recorded 1.0, and none recorded 0.6. Every stereo pair ever shot
+     * with this app is main-framed — the ultrawide's entire reason for being in the pair was
+     * discarded at capture time, on every single one.
+     *
+     * Note the user's zoom_ratio preference does NOT reach here: copyBase() does not carry
+     * CONTROL_ZOOM_RATIO, so the preference governs preview and video while the stereo still
+     * took whatever this method set. Setting the preference alone would have produced pairs
+     * that looked corrected on screen and were not.
      */
     private void applyFullFieldOfView(CaptureRequest.Builder b) {
         if (Build.VERSION.SDK_INT >= 30) {
             Range<Float> zoom =
                     mCharacteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
-            if (zoom != null && zoom.getLower() <= 1.0f && zoom.getUpper() >= 1.0f) {
-                b.set(CaptureRequest.CONTROL_ZOOM_RATIO, 1.0f);
+            if (zoom != null) {
+                // The LOWER bound is the widest field of view the device will give us. Ask for
+                // it explicitly rather than for 1.0, and rather than leaving it at whatever the
+                // HAL last had.
+                float widest = zoom.getLower();
+                b.set(CaptureRequest.CONTROL_ZOOM_RATIO, widest);
+                Log.d(TAG, "zoom ratio set to the widest available " + widest
+                        + " (range " + zoom + "); 1.0 would be main-camera framing");
             }
         }
         if (Build.VERSION.SDK_INT < 28) {
