@@ -61,9 +61,11 @@ look at your time offsets.
 
 ## Install
 
-No prebuilt APK at the moment — build from source: open `android_app/` in Android
-Studio (JDK 17) and run it on your device. Upstream's released APK predates everything
-described here.
+Grab the APK from [Releases](https://github.com/SometimesYouNeverKnow/VideoIMUCapture-Android/releases)
+and sideload it. If upstream's app (or a debug build) is already installed, uninstall it
+first — the signing keys differ and Android refuses cross-key upgrades. Or build from
+source: open `android_app/` in Android Studio (JDK 17) and run it on your device.
+Upstream's released APK predates everything described here.
 
 ## Reading the data
 
