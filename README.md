@@ -1,72 +1,92 @@
-# VideoIMUCapture-Android
-Android application for capturing video and IMU data useful for 3D reconstruction using SLAM and Structure from Motion techniques.
+# VideoIMUCapture-Android (a hobbyist's fork)
 
-> ## This fork (2026)
-> Modernized and extended from [DavidGillsjo/VideoIMUCapture-Android](https://github.com/DavidGillsjo/VideoIMUCapture-Android) (upstream last released 2021):
-> - **Builds on current tooling** — Gradle 8.7, AGP 8.5.2, JDK 17, compileSdk/targetSdk 34, protobuf 3.25.
-> - **Firebase removed entirely.** Nothing leaves the device. The old analytics camera dump is reborn as `camera_census.json` in the app files directory — every camera's characteristics (stabilization modes, OIS data support, calibration tiers, timestamp source, physical lens ids) written locally on each launch.
-> - **More sensors recorded** (all optional, absent permission = absent stream, proto changes are field-number additive so old tooling still parses new files):
->   barometer, hardware step counter/detector, rotation-vector family (tagged OS-fused), 1 Hz GPS track with `elapsedRealtimeNanos` (same clock family as the IMU), and per-frame `SCALER_CROP_REGION` — a per-frame EIS detector.
-> - IMU rate 100 Hz → 200 Hz; sensor values cloned (the framework may pool event objects); writer queue sized for the full suite.
+An Android capture instrument for 3D reconstruction work: video, IMU, and the rest of
+the phone's sensor suite, all recorded on one clock. Modernized and extended in 2026
+from [DavidGillsjo/VideoIMUCapture-Android](https://github.com/DavidGillsjo/VideoIMUCapture-Android)
+(last released 2021).
 
+## The spirit of this fork
+
+This is a hobby instrument. I modernized and extended it because my own reconstruction
+experiments needed a capture tool I could trust, and it's shared here in the same
+spirit — for the fun of it, in case something in it saves you an afternoon.
+
+So, said warmly and plainly: there is no warranty, no support contract, and no roadmap.
+Everything below was measured carefully, but on exactly one phone (a Galaxy S24 Ultra
+on Android 16) — your device will differ, especially in what its cameras expose. Take
+whatever benefit you can from it; the [GPL-3.0 license](LICENSE) exists so you can.
+If something here helps your project, that's the whole reward. Issues and field notes
+are welcome, and fixes arrive on hobby time, if at all.
 
 <img src="images/Capture.png" width="33%" border="1" ><img src="images/Settings.png" width="33%" border="1" ><img src="images/Warning_small.png" width="33%" border="1" >
 
-# Description
-This Android application is a data collection tool for researchers working with Simultaneous Localization and Mapping (SLAM) and Structure from Motion (SfM).
+## What it records
 
-It records Camera Frames at ~30Hz and Inertia Measurement Unit (IMU) data at ~100Hz synchronized to the same clock, given that the [Android device supports it](https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics#SENSOR_INFO_TIMESTAMP_SOURCE).
-The camera frames are stored to a H.264/MP4 video file and the frame meta data together with IMU data is stored in a protobuf3 file.
+- **Video** at ~30 Hz to H.264/MP4 (full 4:3 sensor frame on the test device), with
+  per-frame metadata — timestamps, ISO, exposure, focus distance, and per-frame
+  `SCALER_CROP_REGION`, which doubles as an EIS detector.
+- **IMU** requested at 200 Hz (the S24 Ultra's hardware caps at ~189), on the same
+  clock as the frames where the device supports
+  [`SENSOR_INFO_TIMESTAMP_SOURCE = REALTIME`](https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics#SENSOR_INFO_TIMESTAMP_SOURCE).
+- **The rest of the suite** (each optional; no permission = no stream): barometer,
+  hardware step counter with a baseline row at record start, the rotation-vector
+  family (tagged as OS-fused), and a 1 Hz GNSS track carrying `elapsedRealtimeNanos`
+  so it joins the sensor clock.
+- **Stills as an instrument**: WALK / OBJECT / PANO modes with a stillness-triggered
+  shutter, full-resolution RAW+JPEG bursts, exposure brackets, focus stacks stepped by
+  depth of field, a simultaneous ultrawide+main stereo pair (a metric baseline on
+  devices whose factory calibration publishes `LENS_POSE_TRANSLATION`), torch control,
+  and per-mode JPEG quality.
+- **`camera_census.json`**, written locally on every launch: each camera's
+  characteristics, including factory intrinsics, distortion, and lens pose where the
+  vendor populates them.
 
-A major problem with modern smartphones and 3D reconstruction is that all have Optical Image Stabilization (OIS), which means different camera parameters for each frame.
-Furthermore, on many Android devices it cannot be disabled and a rare few actually supply the data of the lens movement.
-VideoIMUCapture shows a clear warning if you have this feature on during recording and includes settings for both Optical Image Stabilization and Digital Video Stabilization (DVS).
+Everything lands in `Android/data/se.lth.math.videoimucapture/files/<date>/` as
+`video_recording.mp4` plus a protobuf sidecar (`video_meta.pb3`), stills alongside.
+**Nothing leaves the device** — the upstream Firebase analytics were removed entirely.
 
-This code is forked from [mobile-sensor-ar-logger](https://github.com/OSUPCVLab/mobile-ar-sensor-logger) which in turn is based on the [grafika](https://github.com/google/grafika/blob/master/app/src/main/java/com/android/grafika/CameraCaptureActivity.java) project.
-For the video capture it uses the Camera2 API.
+## Changed from upstream, briefly
 
-# Features
-- Captures camera frames at ~30Hz to H.264/MP4.
-- Captures IMU data at ~100Hz.
-- Synchronized clock, assuming [the device supports it](https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics#SENSOR_INFO_TIMESTAMP_SOURCE).
-- Stores IMU data and all frame meta data in a protobuf file, check [recording.proto](https://github.com/DavidGillsjo/VideoIMUCapture-Android/blob/master/protobuf/recording.proto) to see what data is included.
-- Display warning if OIS or DVS is enabled since this affects the camera parameters.
-- Settings menu for configuring video resolution, OIS, DVS, Auto focus and Auto exposure.
+Builds on current tooling (Gradle 8.7, AGP 8.5.2, JDK 17, compileSdk/targetSdk 34,
+protobuf 3.25). Proto changes are field-number additive, so tooling written for
+upstream files still parses these. AE/AWB can lock during recording, and the OIS/DVS
+warnings and settings from upstream remain.
 
-# Install
-To install on your Android device go to the [Release page](https://github.com/DavidGillsjo/VideoIMUCapture-Android/releases) from your Android device browser and download the latest `.apk` file. You will need to give your browser permission to install the application, but Android should guide you through the necessary steps.
+One fix worth knowing about even if you stay on upstream: the original recorded
+**stale IMU data** — the sensor queues filled from app launch but drained only during
+recording, so a file could carry samples as old as the app session. Calibration tools
+that fit a camera–IMU time offset absorb this silently. Fixed here; if you've built
+VIO datasets with upstream builds after lingering on the preview screen, it's worth a
+look at your time offsets.
 
-# Calibration
-To use the data for 3D reconstruction you will need to calibrate the IMU and Camera, see [Calibration README](calibration/README.md) for help.
+## Install
 
-# Read Protobuf File
-Examples on python scripts reading the protobuf file can be found the the [calibration](calibration) folder, for example [data2statistics.py](calibration/data2statistics.py). You need `protoc` to compile a python module first, this is already done in the calibration docker image.
-You may compile it yourself like this
+No prebuilt APK at the moment — build from source: open `android_app/` in Android
+Studio (JDK 17) and run it on your device. Upstream's released APK predates everything
+described here.
+
+## Reading the data
+
+The schema is [`protobuf/recording.proto`](protobuf/recording.proto). Compile a Python
+module with `protoc` and read `video_meta.pb3` directly:
+
 ```bash
-#Go to git repo
-cd <some_path>/VideoIMUCapture-Android
-
-#Install protoc
-wget -nv "https://github.com/protocolbuffers/protobuf/releases/download/v3.13.0/protoc-3.13.0-linux-x86_64.zip" -O protoc.zip &&\  
-sudo unzip protoc.zip -d /usr/local &&\
-rm protoc.zip
-
-# Build module - Alternative  1
-# Add to pythonpath
-mkdir proto_python 
-protoc --python_out=proto_python protobuf/recording.proto
-export PYTHONPATH="$(pwd)/proto_python:${PYTHONPATH}"
-
-# Build module - Alternative  2
-# Just place the parser in your own project.
 protoc --python_out=<your_project_dir> protobuf/recording.proto
-
-# Other Python dependencies
 pip3 install protobuf pyquaternion
-
-#Run script
-python3 calibration/data2statistics.py <datafolder>/<datetime>/video_meta.pb3
 ```
 
-# Feedback
-If you find any bugs or have feature requests, please create an [issue](https://github.com/DavidGillsjo/VideoIMUCapture-Android/issues) on this Github page.
+Upstream's [calibration guide](calibration/README.md) and example scripts (e.g.
+[`data2statistics.py`](calibration/data2statistics.py)) still apply.
+
+## Lineage and thanks
+
+None of this would exist without the original work:
+[DavidGillsjo/VideoIMUCapture-Android](https://github.com/DavidGillsjo/VideoIMUCapture-Android),
+itself building on [mobile-ar-sensor-logger](https://github.com/OSUPCVLab/mobile-ar-sensor-logger)
+and [grafika](https://github.com/google/grafika). GPL-3.0, as inherited.
+
+## Feedback
+
+Bugs, questions, or notes from your own device:
+[open an issue here on the fork](https://github.com/SometimesYouNeverKnow/VideoIMUCapture-Android/issues) —
+please not on upstream's tracker, they've earned their quiet.
