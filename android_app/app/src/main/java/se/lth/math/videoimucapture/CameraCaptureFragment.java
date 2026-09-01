@@ -70,6 +70,7 @@ public class CameraCaptureFragment extends Fragment
             new android.os.Handler(android.os.Looper.getMainLooper());
     private boolean mCameraAsleep = false;
     private final Runnable mIdleSleep = this::sleepCamera;
+    private long mRecordStartMs = 0;    // elapsedRealtime at record start, for the on-screen clock
 
     //Owned by the activity
     private CameraCaptureActivity.CameraHandler getmCameraHandler() {
@@ -409,9 +410,11 @@ public class CameraCaptureFragment extends Fragment
         mRecordingEnabled = !mRecordingEnabled;
         if (mRecordingEnabled) {
             cancelIdleTimer();
+            mRecordStartMs = android.os.SystemClock.elapsedRealtime();
             startRecording();
             updateControls();
         } else {
+            mRecordStartMs = 0;
             // disable button until recording finish
             if (mRecordingButton != null){
                 mRecordingButton.setEnabled(false);
@@ -571,10 +574,27 @@ public class CameraCaptureFragment extends Fragment
                                 exposureTimeNs / 1000000.0);
         final String imuHz = String.format(Locale.getDefault(),  "IMU: %.0fHz",
                 getmImuManager().getSensorFrequency());
+        // THE CLOCK. The operator could not see how long a take had run. Refreshed with every
+        // capture result, so it costs nothing extra; the battery temperature rides along because
+        // a five-minute walk is exactly when it starts to matter.
+        String clock = "";
+        if (mRecordingEnabled && mRecordStartMs > 0) {
+            long s = (android.os.SystemClock.elapsedRealtime() - mRecordStartMs) / 1000;
+            clock = String.format(Locale.getDefault(), "REC %02d:%02d|", s / 60, s % 60);
+        }
+        String heat = "";
+        CameraCaptureActivity act = (CameraCaptureActivity) getActivity();
+        if (act != null && act.getmThermalLogger() != null) {
+            float c = act.getmThermalLogger().lastBatteryTempC();
+            if (!Float.isNaN(c)) {
+                heat = String.format(Locale.getDefault(), "%.0f°C|", c);
+            }
+        }
+        final String line = "|" + clock + sfl + "|" + sexpotime + "|" + imuHz + "|" + heat;
 
         getActivity().runOnUiThread(() -> {
             if (mCaptureResultText != null) {
-                mCaptureResultText.setText("|" + sfl + "|" + sexpotime + "|" + imuHz + "|");
+                mCaptureResultText.setText(line);
             }
         });
     }
@@ -733,6 +753,22 @@ class CameraSurfaceRenderer implements GLSurfaceView.Renderer {
     }
 
     /**
+     * The automatic bitrate, codec-aware. Measured 2026-09-01 on the S24U: the first HEVC clip
+     * came out the same size as the H.264 one (343.7 MB, 93.8 Mbit/s), because both encoders
+     * were handed the BPP formula's 93.6 Mbit/s. At equal bitrate HEVC buys quality, not disk;
+     * the disk comes from asking it for less. 0.55 is the middle of the 40-52% saving the codec
+     * is known for at equal visual quality, and it is a starting point to be measured against
+     * feature counts, not a fact about this scene.
+     */
+    private int autoBitRate(int width, int height) {
+        int avc = CameraUtils.calcBitRate(width, height, VideoEncoderCore.FRAME_RATE);
+        if (VideoEncoderCore.HEVC_MIME_TYPE.equals(mEncoderMime)) {
+            return (int) (avc * 0.55f);
+        }
+        return avc;
+    }
+
+    /**
      * Notifies the renderer thread that the activity is pausing.
      * <p>
      * For best results, call this *after* disabling Camera preview.
@@ -880,9 +916,7 @@ class CameraSurfaceRenderer implements GLSurfaceView.Renderer {
                                     mSwappedVideoDimensions ? mIncomingHeight : mIncomingWidth,
                                     mSwappedVideoDimensions ? mIncomingWidth : mIncomingHeight,
                                     mEncoderBitRate > 0 ? mEncoderBitRate
-                                            : CameraUtils.calcBitRate(mIncomingWidth,
-                                                    mIncomingHeight,
-                                                    VideoEncoderCore.FRAME_RATE),
+                                            : autoBitRate(mIncomingWidth, mIncomingHeight),
                                     mEncoderMime,
                                     EGL14.eglGetCurrentContext(),
                                     mMetadataRecorder));

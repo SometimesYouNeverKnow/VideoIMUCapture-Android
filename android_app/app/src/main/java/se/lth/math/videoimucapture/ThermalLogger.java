@@ -121,6 +121,14 @@ public class ThermalLogger {
         }
     }
 
+    /** The most recent battery temperature, or NaN before the first sample. */
+    public float lastBatteryTempC() {
+        if (Float.isNaN(mLastBatteryC)) {
+            mLastBatteryC = batteryTempC();     // cheap: a sticky broadcast, no receiver
+        }
+        return mLastBatteryC;
+    }
+
     /** One line for the screen: what the phone says about its own heat right now. */
     public String summary() {
         StringBuilder s = new StringBuilder();
