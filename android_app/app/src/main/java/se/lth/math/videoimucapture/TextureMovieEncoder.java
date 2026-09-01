@@ -106,22 +106,25 @@ public class TextureMovieEncoder implements Runnable {
         final int mWidth;
         final int mHeight;
         final int mBitRate;
+        final String mMimeType;
         final EGLContext mEglContext;
         final RecordingWriter mMetaRecorder;
 
         public EncoderConfig(String outputFile, int width, int height, int bitRate,
-                             EGLContext sharedEglContext, RecordingWriter metaRecorder) {
+                             String mimeType, EGLContext sharedEglContext,
+                             RecordingWriter metaRecorder) {
             mOutputFile = outputFile;
             mWidth = width;
             mHeight = height;
             mBitRate = bitRate;
+            mMimeType = mimeType;
             mEglContext = sharedEglContext;
             mMetaRecorder = metaRecorder;
         }
 
         @Override
         public String toString() {
-            return "EncoderConfig: " + mWidth + "x" + mHeight + " @" + mBitRate +
+            return "EncoderConfig: " + mWidth + "x" + mHeight + " @" + mBitRate + " " + mMimeType +
                     " to '" + mOutputFile + "' ctxt=" + mEglContext;
         }
     }
@@ -325,7 +328,7 @@ public class TextureMovieEncoder implements Runnable {
         Log.d(TAG, "handleStartRecording " + config);
         mFrameNum = 0;
         prepareEncoder(config.mEglContext, config.mWidth, config.mHeight, config.mBitRate,
-                config.mOutputFile, config.mMetaRecorder);
+                config.mMimeType, config.mOutputFile, config.mMetaRecorder);
     }
 
     /**
@@ -399,10 +402,10 @@ public class TextureMovieEncoder implements Runnable {
     }
 
     private void prepareEncoder(EGLContext sharedContext, int width, int height, int bitRate,
-                                String outputFile, RecordingWriter metaRecorder) {
+                                String mimeType, String outputFile, RecordingWriter metaRecorder) {
         try {
             mVideoEncoder = new VideoEncoderCore(
-                    width, height, bitRate, outputFile, metaRecorder);
+                    mimeType, width, height, bitRate, outputFile, metaRecorder);
         } catch (IOException ioe) {
             throw new RuntimeException(ioe);
         }

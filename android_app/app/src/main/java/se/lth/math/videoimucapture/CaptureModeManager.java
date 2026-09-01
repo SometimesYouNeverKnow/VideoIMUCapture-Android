@@ -58,6 +58,14 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
     private RecordingWriter mWriter;
     private boolean mOwnsWriter = false;
     private int mShots = 0;
+    // Whether THIS video session engaged the AE/AWB lock, so that ending it releases only what
+    // it took. The lock is a preference since v0.14: the greenhouse capture showed that a scene
+    // whose light changes every three feet needs the exposure to move, and a session that
+    // cannot move it forces a stop-and-restart — which turns one traverse into many sessions,
+    // and cross-session matching is the thing that fails. With the lock off, auto exposure
+    // keeps running and every frame records its own exposure and ISO, which is what lets it
+    // float safely.
+    private boolean mVideoLockedRadiometry = false;
     private boolean mEndRawPending = false;
 
     public CaptureModeManager(CameraCaptureActivity activity) {
@@ -130,9 +138,12 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         mVideoOwnsSession = true;
         mRunDir = dir;
         Camera2Proxy proxy = mActivity.getmCamera2Proxy();
-        if (proxy != null) {
+        mVideoLockedRadiometry = androidx.preference.PreferenceManager
+                .getDefaultSharedPreferences(mActivity).getBoolean("lock_radiometry", true);
+        if (proxy != null && mVideoLockedRadiometry) {
             proxy.lockAutoAlgorithms(true);
         }
+        Log.i(TAG, "video session radiometry " + (mVideoLockedRadiometry ? "locked" : "floating"));
         notifyState(true, mMode == Mode.OBJECT
                 ? "OBJECT: video adds little to a fixed viewpoint"
                 : mMode + ": video recording");
@@ -149,9 +160,10 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         }
         mVideoOwnsSession = false;
         Camera2Proxy proxy = mActivity.getmCamera2Proxy();
-        if (proxy != null) {
+        if (proxy != null && mVideoLockedRadiometry) {
             proxy.lockAutoAlgorithms(false);
         }
+        mVideoLockedRadiometry = false;
         File dir = mRunDir;
         mRunDir = null;
         notifyState(false, "video saved");

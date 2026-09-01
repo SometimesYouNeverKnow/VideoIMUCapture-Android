@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PreferenceScreen
+    xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
     <PreferenceCategory
@@ -103,6 +104,43 @@
             app:showSeekBarValue="true"
             app:persistent="false"
             app:summary="Sensitivity"/>
+
+        <SwitchPreferenceCompat
+            app:key="lock_radiometry"
+            app:title="Freeze exposure while recording"
+            app:defaultValue="true"
+            app:summary="Lock AE and AWB at the first frame so the clip has one radiometry. Off (with Continuous mode): auto exposure keeps running through the whole session and every frame records its own exposure and ISO."/>
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        app:key="recording_category"
+        app:title="Recording">
+
+        <ListPreference
+            app:key="video_codec"
+            app:title="Video codec"
+            app:entries="@array/video_codec_desc"
+            app:entryValues="@array/video_codec_values"
+            app:defaultValue="video/avc"
+            app:useSimpleSummaryProvider="true"/>
+
+        <SeekBarPreference
+            app:key="video_bitrate_mbps"
+            app:title="Video bitrate"
+            app:showSeekBarValue="true"
+            app:min="0"
+            android:max="150"
+            app:defaultValue="0"
+            app:summary="Mbit/s. 0 = automatic (about 94 for the full sensor at 30 fps)."/>
+
+        <SeekBarPreference
+            app:key="idle_sleep_s"
+            app:title="Camera sleep after"
+            app:showSeekBarValue="true"
+            app:min="0"
+            android:max="300"
+            app:defaultValue="60"
+            app:summary="Seconds idle before the preview stops and the sensor goes quiet. 0 = never. Tap to wake."/>
     </PreferenceCategory>
 
 

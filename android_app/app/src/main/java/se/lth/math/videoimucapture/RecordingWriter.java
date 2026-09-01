@@ -21,6 +21,7 @@ import se.lth.math.videoimucapture.RecordingProtos.StepData;
 import se.lth.math.videoimucapture.RecordingProtos.OrientationData;
 import se.lth.math.videoimucapture.RecordingProtos.GnssData;
 import se.lth.math.videoimucapture.RecordingProtos.StillMetaData;
+import se.lth.math.videoimucapture.RecordingProtos.ThermalData;
 import se.lth.math.videoimucapture.RecordingProtos.MessageWrapper;
 
 import static java.lang.Math.abs;
@@ -164,6 +165,11 @@ public class RecordingWriter implements Runnable{
                 VideoCaptureData.newBuilder().addStills(msg.getStillData())
                         .build().writeTo(mFileStream);
                 break;
+            case THERMAL_DATA:
+                if (VERBOSE) Log.d(TAG,"Got Thermal data");
+                VideoCaptureData.newBuilder().addThermal(msg.getThermalData())
+                        .build().writeTo(mFileStream);
+                break;
         }
     }
 
@@ -244,6 +250,9 @@ public class RecordingWriter implements Runnable{
     }
     public void queueData(StillMetaData msg) {
         queueData(MessageWrapper.newBuilder().setStillData(msg).build());
+    }
+    public void queueData(ThermalData msg) {
+        queueData(MessageWrapper.newBuilder().setThermalData(msg).build());
     }
 
 }

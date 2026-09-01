@@ -18,6 +18,7 @@ package se.lth.math.videoimucapture;
 
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
+import android.media.MediaCodecList;
 import android.media.MediaFormat;
 import android.media.MediaMuxer;
 import android.util.Log;
@@ -40,10 +41,14 @@ public class VideoEncoderCore {
     private static final String TAG = CameraCaptureActivity.TAG;
     private static final boolean VERBOSE = false;
 
-    // TODO: these ought to be configurable as well
-    private static final String MIME_TYPE = "video/avc";    // H.264 Advanced Video Coding
+    // The codec is a setting since v0.14 ("video_codec"): HEVC is 40-50% smaller than AVC at
+    // the same visual quality, keeps more SIFT matches at a given bitrate, and the phone encodes
+    // both in hardware. AVC stays the default because every downstream tool has read it.
+    public static final String DEFAULT_MIME_TYPE = "video/avc";    // H.264 Advanced Video Coding
+    public static final String HEVC_MIME_TYPE = "video/hevc";      // H.265
     public static final int FRAME_RATE = 30;               // 30fps
     private static final int IFRAME_INTERVAL = 1;           // seconds between I-frames
+    private final String mMimeType;
 
     private Surface mInputSurface;
     private MediaMuxer mMuxer;
@@ -57,12 +62,27 @@ public class VideoEncoderCore {
     /**
      * Configures encoder and muxer state, and prepares the input Surface.
      */
-    public VideoEncoderCore(int width, int height, int bitRate,
+    public VideoEncoderCore(String mimeType, int width, int height, int bitRate,
                             String outputFile, RecordingWriter metaRecorder)
             throws IOException {
         mBufferInfo = new MediaCodec.BufferInfo();
 
-        MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, width, height);
+        // A CODEC IS A REQUEST, NOT A GUARANTEE. Ask the codec list whether an encoder exists for
+        // this type at this size before configure() can throw a message that names neither.
+        // The probe format carries no frame rate: findEncoderForFormat rejects one on older APIs.
+        String mime = (mimeType == null || mimeType.isEmpty()) ? DEFAULT_MIME_TYPE : mimeType;
+        if (!DEFAULT_MIME_TYPE.equals(mime)) {
+            MediaFormat probe = MediaFormat.createVideoFormat(mime, width, height);
+            String encoderName = new MediaCodecList(MediaCodecList.REGULAR_CODECS)
+                    .findEncoderForFormat(probe);
+            if (encoderName == null) {
+                Log.w(TAG, "no encoder for " + mime + " at " + width + "x" + height
+                        + "; falling back to " + DEFAULT_MIME_TYPE);
+                mime = DEFAULT_MIME_TYPE;
+            }
+        }
+        mMimeType = mime;
+        MediaFormat format = MediaFormat.createVideoFormat(mime, width, height);
 
         // Set some properties.  Failing to specify some of these can cause the MediaCodec
         // configure() call to throw an unhelpful exception.
@@ -71,11 +91,12 @@ public class VideoEncoderCore {
         format.setInteger(MediaFormat.KEY_BIT_RATE, bitRate);
         format.setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE);
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, IFRAME_INTERVAL);
+        Log.i(TAG, "encoder " + mime + " " + width + "x" + height + " @ " + bitRate + " bit/s");
         if (VERBOSE) Log.d(TAG, "format: " + format);
 
         // Create a MediaCodec encoder, and configure it with our format.  Get a Surface
         // we can use for input and wrap it with a class that handles the EGL work.
-        mEncoder = MediaCodec.createEncoderByType(MIME_TYPE);
+        mEncoder = MediaCodec.createEncoderByType(mime);
         mEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         mInputSurface = mEncoder.createInputSurface();
         mEncoder.start();

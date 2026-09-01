@@ -132,6 +132,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
     private static TextureMovieEncoder sVideoEncoder = new TextureMovieEncoder();
     private static IMUManager mImuManager;
     private static GnssLogger mGnssLogger;
+    private static ThermalLogger mThermalLogger;
     private static RecordingWriter sRecordingWriter = new RecordingWriter();
     private CaptureModeManager mCaptureModeManager;
 
@@ -156,6 +157,9 @@ public class CameraCaptureActivity extends AppCompatActivity {
     public GnssLogger getmGnssLogger() {
         return mGnssLogger;
     }
+    public ThermalLogger getmThermalLogger() {
+        return mThermalLogger;
+    }
     public CaptureModeManager getmCaptureModeManager() {
         return mCaptureModeManager;
     }
@@ -179,6 +183,7 @@ public class CameraCaptureActivity extends AppCompatActivity {
 
         mImuManager = new IMUManager(this);
         mGnssLogger = new GnssLogger(this);
+        mThermalLogger = new ThermalLogger(this);
         mCaptureModeManager = new CaptureModeManager(this);
 
         if (savedInstanceState == null) {

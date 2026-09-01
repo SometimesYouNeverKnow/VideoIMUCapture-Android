@@ -92,6 +92,21 @@ message EnvironmentData {
   float pressure_hpa = 2;
 }
 
+// Heat, sampled every few seconds while recording, on the sensor clock (elapsedRealtimeNanos).
+// The phone cooks after a minute or two under recording load and the barometer drifts with it;
+// until this message the file could not say how hot it was when that happened.
+//   battery_temp_c    the battery thermistor (ACTION_BATTERY_CHANGED), degrees C
+//   thermal_status    PowerManager.THERMAL_STATUS_*: 0 none, 1 light, 2 moderate, 3 severe,
+//                     4 critical, 5 emergency, 6 shutdown; -1 if the device predates API 29
+//   thermal_headroom  PowerManager.getThermalHeadroom forecast, 1.0 = the throttling threshold;
+//                     absent if the device predates API 30
+message ThermalData {
+  int64 time_ns = 1;
+  float battery_temp_c = 2;
+  int32 thermal_status = 3;
+  float thermal_headroom = 4;
+}
+
 // Hardware step counter/detector. counter is cumulative since boot (TYPE_STEP_COUNTER);
 // -1 for detector-only events (TYPE_STEP_DETECTOR).
 message StepData {
@@ -259,6 +274,7 @@ message VideoCaptureData {
   repeated OrientationData orientation = 8;
   repeated GnssData gnss = 9;
   repeated StillMetaData stills = 10;
+  repeated ThermalData thermal = 11;
 }
 
 message MessageWrapper {
@@ -273,5 +289,6 @@ message MessageWrapper {
     OrientationData orientation_data = 8;
     GnssData gnss_data = 9;
     StillMetaData still_data = 10;
+    ThermalData thermal_data = 11;
   }
 }

@@ -61,6 +61,16 @@ public class CameraCaptureFragment extends Fragment
 
     private int mCameraPreviewWidth, mCameraPreviewHeight;
 
+    // CAMERA SLEEP. The phone cooks while the app merely sits open, because the preview keeps
+    // the sensor streaming at full rate and the ISP awake so recording can start instantly.
+    // After `idle_sleep_s` seconds without a touch or a run, the repeating request is stopped:
+    // the preview freezes, the sensor goes quiet, and any touch brings it back in about half a
+    // second — the honest price of not cooking. Never while recording or during a stills run.
+    private final android.os.Handler mIdleHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private boolean mCameraAsleep = false;
+    private final Runnable mIdleSleep = this::sleepCamera;
+
     //Owned by the activity
     private CameraCaptureActivity.CameraHandler getmCameraHandler() {
         return ((CameraCaptureActivity) getActivity()).getmCameraHandler();
@@ -138,7 +148,10 @@ public class CameraCaptureFragment extends Fragment
         };
         final CaptureModeManager modes =
                 ((CameraCaptureActivity) getActivity()).getmCaptureModeManager();
-        mCaptureButton.setOnClickListener(v -> modes.onCaptureButton());
+        mCaptureButton.setOnClickListener(v -> {
+            wakeCamera();
+            modes.onCaptureButton();
+        });
         CaptureModeManager.Mode[] all = CaptureModeManager.Mode.values();
         for (int i = 0; i < mModeViews.length; i++) {
             final CaptureModeManager.Mode m = all[i];
@@ -172,7 +185,9 @@ public class CameraCaptureFragment extends Fragment
         mGLView.setRenderer(mRenderer);
         mGLView.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
         mGLView.setTouchListener((event, width, height) -> {
-            if (getmCameraHandler() != null) {
+            boolean wasAsleep = mCameraAsleep;
+            wakeCamera();
+            if (!wasAsleep && getmCameraHandler() != null) {
                 getmCameraHandler().changeManualFocusPoint(
                         event.getX(), event.getY(), width, height);
             }
@@ -180,6 +195,64 @@ public class CameraCaptureFragment extends Fragment
 
         mCaptureResultText = view.findViewById(R.id.captureResult_text);
 
+    }
+
+    private int idleSleepSeconds() {
+        if (getActivity() == null) {
+            return 0;
+        }
+        return androidx.preference.PreferenceManager.getDefaultSharedPreferences(getActivity())
+                .getInt("idle_sleep_s", 60);
+    }
+
+    private void armIdleTimer() {
+        mIdleHandler.removeCallbacks(mIdleSleep);
+        int s = idleSleepSeconds();
+        if (s > 0) {
+            mIdleHandler.postDelayed(mIdleSleep, s * 1000L);
+        }
+    }
+
+    private void cancelIdleTimer() {
+        mIdleHandler.removeCallbacks(mIdleSleep);
+    }
+
+    private void sleepCamera() {
+        CameraCaptureActivity act = (CameraCaptureActivity) getActivity();
+        if (act == null) {
+            return;
+        }
+        CaptureModeManager modes = act.getmCaptureModeManager();
+        if (mRecordingEnabled || (modes != null && modes.isRunning())) {
+            armIdleTimer();          // busy after all; ask again later
+            return;
+        }
+        Camera2Proxy proxy = act.getmCamera2Proxy();
+        if (proxy == null) {
+            return;
+        }
+        proxy.stopPreview();
+        mCameraAsleep = true;
+        if (mCaptureStatusText != null) {
+            mCaptureStatusText.setText("camera asleep — tap to wake");
+        }
+        Log.i(TAG, "camera asleep after " + idleSleepSeconds() + " s idle");
+    }
+
+    private void wakeCamera() {
+        if (mCameraAsleep) {
+            CameraCaptureActivity act = (CameraCaptureActivity) getActivity();
+            Camera2Proxy proxy = act == null ? null : act.getmCamera2Proxy();
+            if (proxy != null) {
+                proxy.startPreview();
+            }
+            mCameraAsleep = false;
+            if (mCaptureStatusText != null) {
+                mCaptureStatusText.setText("");
+            }
+            Log.i(TAG, "camera awake");
+        }
+        armIdleTimer();
     }
 
     private void updateTorchButton(boolean on) {
@@ -228,6 +301,11 @@ public class CameraCaptureFragment extends Fragment
                                     ? R.color.captureButtonActiveBkg
                                     : R.color.captureButtonBkg, null)));
         }
+        if (running) {
+            cancelIdleTimer();
+        } else {
+            armIdleTimer();
+        }
         if (mCaptureStatusText != null) {
             mCaptureStatusText.setText(summary == null ? "" : summary);
             if (!running) {
@@ -274,6 +352,8 @@ public class CameraCaptureFragment extends Fragment
         Log.d(TAG, "Keeping screen on for previewing recording.");
         getActivity().getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         updateControls();
+        mCameraAsleep = false;   // the camera is re-initialised on resume; the timer restarts
+        armIdleTimer();
 
         mGLView.onResume();
         mGLView.queueEvent(new Runnable() {
@@ -288,6 +368,8 @@ public class CameraCaptureFragment extends Fragment
     @Override
     public void onPause() {
         super.onPause();
+        cancelIdleTimer();
+        mCameraAsleep = false;
 
         if (mRecordingEnabled) {
             stopRecording();
@@ -323,8 +405,10 @@ public class CameraCaptureFragment extends Fragment
      * onClick handler for "record" button.
      */
     public void clickToggleRecording(@SuppressWarnings("unused") View unused) {
+        wakeCamera();
         mRecordingEnabled = !mRecordingEnabled;
         if (mRecordingEnabled) {
+            cancelIdleTimer();
             startRecording();
             updateControls();
         } else {
@@ -333,6 +417,7 @@ public class CameraCaptureFragment extends Fragment
                 mRecordingButton.setEnabled(false);
             }
             stopRecording();
+            armIdleTimer();
         }
     }
 
@@ -423,6 +508,7 @@ public class CameraCaptureFragment extends Fragment
         if (writerWasIdle) {
             getmImuManager().startRecording(recordingWriter);
             ((CameraCaptureActivity) getActivity()).getmGnssLogger().startRecording(recordingWriter);
+            ((CameraCaptureActivity) getActivity()).getmThermalLogger().startRecording(recordingWriter);
         }
 
         if (camera2Proxy != null) {
@@ -430,6 +516,12 @@ public class CameraCaptureFragment extends Fragment
         } else {
             throw new RuntimeException("mCamera2Proxy should not be null upon toggling record button");
         }
+        // Codec and bitrate are read here, on the UI thread, and handed to the renderer before
+        // the state change is queued, so the GL thread sees them when it builds the encoder.
+        android.content.SharedPreferences prefs =
+                androidx.preference.PreferenceManager.getDefaultSharedPreferences(getActivity());
+        mRenderer.setEncoderPrefs(prefs.getString("video_codec", VideoEncoderCore.DEFAULT_MIME_TYPE),
+                prefs.getInt("video_bitrate_mbps", 0) * 1_000_000);
         mGLView.queueEvent(new Runnable() {
             @Override
             public void run() {
@@ -454,6 +546,7 @@ public class CameraCaptureFragment extends Fragment
         if (ownedSession) {
             getmImuManager().stopRecording();
             ((CameraCaptureActivity) getActivity()).getmGnssLogger().stopRecording();
+            ((CameraCaptureActivity) getActivity()).getmThermalLogger().stopRecording();
         }
 
         mGLView.queueEvent(new Runnable() {
@@ -585,6 +678,10 @@ class CameraSurfaceRenderer implements GLSurfaceView.Renderer {
     private TextureMovieEncoder mVideoEncoder;
     private String mOutputFile;
     private RecordingWriter mMetadataRecorder;
+    // Set from the UI thread before the recording state change is queued; read on the GL
+    // thread when the encoder is built. A bitrate of 0 means the BPP formula in CameraUtils.
+    private volatile String mEncoderMime = VideoEncoderCore.DEFAULT_MIME_TYPE;
+    private volatile int mEncoderBitRate = 0;
 
     private FullFrameRect mFullScreen;
 
@@ -627,6 +724,12 @@ class CameraSurfaceRenderer implements GLSurfaceView.Renderer {
     public void resetOutputFiles(String outputFile, RecordingWriter metaRecorder) {
         mOutputFile = outputFile;
         mMetadataRecorder = metaRecorder;
+    }
+
+    public void setEncoderPrefs(String mimeType, int bitRate) {
+        mEncoderMime = (mimeType == null || mimeType.isEmpty())
+                ? VideoEncoderCore.DEFAULT_MIME_TYPE : mimeType;
+        mEncoderBitRate = Math.max(0, bitRate);
     }
 
     /**
@@ -776,9 +879,11 @@ class CameraSurfaceRenderer implements GLSurfaceView.Renderer {
                                     mOutputFile,
                                     mSwappedVideoDimensions ? mIncomingHeight : mIncomingWidth,
                                     mSwappedVideoDimensions ? mIncomingWidth : mIncomingHeight,
-                                    CameraUtils.calcBitRate(mIncomingWidth,
-                                            mIncomingHeight,
-                                            VideoEncoderCore.FRAME_RATE),
+                                    mEncoderBitRate > 0 ? mEncoderBitRate
+                                            : CameraUtils.calcBitRate(mIncomingWidth,
+                                                    mIncomingHeight,
+                                                    VideoEncoderCore.FRAME_RATE),
+                                    mEncoderMime,
                                     EGL14.eglGetCurrentContext(),
                                     mMetadataRecorder));
                     mRecordingStatus = RECORDING_ON;

@@ -40,6 +40,10 @@ are welcome, and fixes arrive on hobby time, if at all.
 - **`camera_census.json`**, written locally on every launch: each camera's
   characteristics, including factory intrinsics, distortion, and lens pose where the
   vendor populates them.
+- **Heat** (v0.14): battery temperature, Android's thermal status and thermal headroom,
+  every five seconds while recording, on the sensor clock — because the phone cooks
+  after a minute or two of recording and the barometer drifts with it, and until now
+  the file could not say how hot it was when that happened.
 
 Everything lands in `Android/data/se.lth.math.videoimucapture/files/<date>/` as
 `video_recording.mp4` plus a protobuf sidecar (`video_meta.pb3`), stills alongside.
@@ -51,6 +55,15 @@ Builds on current tooling (Gradle 8.7, AGP 8.5.2, JDK 17, compileSdk/targetSdk 3
 protobuf 3.25). Proto changes are field-number additive, so tooling written for
 upstream files still parses these. AE/AWB can lock during recording, and the OIS/DVS
 warnings and settings from upstream remain.
+
+v0.14 added four settings, all aimed at the two things that stop a long capture — heat
+and disk: **Video codec** (H.265/HEVC is 40–50% smaller than H.264 at the same quality
+and keeps more feature matches at a given bitrate; it falls back to H.264 if the device
+has no HEVC encoder), **Video bitrate** (0 = the automatic rate), **Camera sleep** (after
+N idle seconds the preview stops and the sensor goes quiet instead of cooking the phone
+while it waits; tap to wake), and **Freeze exposure while recording** (on = the old
+behaviour, one radiometry per clip; off = auto exposure keeps running through a scene
+whose light changes every few steps, with every frame's exposure and ISO recorded).
 
 One fix worth knowing about even if you stay on upstream: the original recorded
 **stale IMU data** — the sensor queues filled from app launch but drained only during
