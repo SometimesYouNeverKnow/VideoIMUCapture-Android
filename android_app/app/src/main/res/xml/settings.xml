@@ -110,6 +110,21 @@
             app:title="Freeze exposure while recording"
             app:defaultValue="true"
             app:summary="Lock AE and AWB at the first frame so the clip has one radiometry. Off (with Continuous mode): auto exposure keeps running through the whole session and every frame records its own exposure and ISO."/>
+
+        <SwitchPreferenceCompat
+            app:key="blur_budget"
+            app:title="Blur budget (experimental)"
+            app:defaultValue="false"
+            app:summary="Cap exposure from the gyro so motion blur stays under the budget below, letting ISO rise instead. Needs Freeze exposure OFF. UNTESTED — verify on your device. Shows HOLD STILL when you are moving too fast for a sharp frame."/>
+
+        <SeekBarPreference
+            app:key="blur_budget_px"
+            app:title="Blur budget (pixels)"
+            app:showSeekBarValue="true"
+            app:min="1"
+            android:max="15"
+            app:defaultValue="3"
+            app:summary="Target maximum motion smear per frame, pixels."/>
     </PreferenceCategory>
 
     <PreferenceCategory

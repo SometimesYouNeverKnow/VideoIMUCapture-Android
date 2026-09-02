@@ -107,6 +107,9 @@ public class IMUManager extends SensorEventCallback {
     // thread, read on the sensor thread, so volatile rather than synchronised — a
     // one-sample delay in seeing a new listener is harmless.
     private volatile StillnessTrigger mStillnessTrigger = null;
+    // Latest gyro magnitude in rad/s, for the blur-budget exposure controller (#38). Written on
+    // the sensor thread on every gyro event, read on the controller's timer — volatile is enough.
+    private volatile float mLastGyroMag = 0f;
     // Idle cap on the sync deques, ~1 s at 200 Hz. Keeps memory bounded while the app
     // sits open and bounds how stale the head of the queue can be at record start.
     private static final int IDLE_QUEUE_CAP = 200;
@@ -244,6 +247,11 @@ public class IMUManager extends SensorEventCallback {
 
     public long getLatestOrientationTimeNs() {
         return mLastOrientationTs;
+    }
+
+    /** Latest gyro magnitude, rad/s. 0 before the first sample. For the blur budget (#38). */
+    public float getLatestGyroMagnitude() {
+        return mLastGyroMag;
     }
 
     public Boolean sensorsExist() {
@@ -432,6 +440,8 @@ public class IMUManager extends SensorEventCallback {
             if (trigger != null) {
                 trigger.onGyro(event.timestamp, event.values);
             }
+            float gx = event.values[0], gy = event.values[1], gz = event.values[2];
+            mLastGyroMag = (float) Math.sqrt(gx * gx + gy * gy + gz * gz);
 
             // sync data — drain until caught up, not one packet per event, so a
             // transient stall can never turn into a permanent lag.

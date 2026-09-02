@@ -51,6 +51,11 @@ are welcome, and fixes arrive on hobby time, if at all.
   gains and colour transform, tonemap mode, dynamic black level, post-RAW boost, AE/AWB
   state, lens state and aperture, noise profile). The file records what the phone offers,
   not only what an earlier build thought to take.
+- **Blur budget** (v0.15, experimental, default off): caps exposure from the gyro so motion
+  smear stays under a pixel budget — letting ISO rise instead of the shutter opening — via the
+  AE target-FPS range, and shows HOLD STILL when you are moving too fast for a sharp frame at
+  the current focal length. Needs *Freeze exposure* off. Never sets a manual exposure, so it
+  cannot black out a frame; but it is untested on a moving device — verify before trusting it.
 
 Everything lands in `Android/data/se.lth.math.videoimucapture/files/<date>/` as
 `video_recording.mp4` plus a protobuf sidecar (`video_meta.pb3`), stills alongside.

@@ -71,6 +71,8 @@ public class CameraCaptureFragment extends Fragment
     private boolean mCameraAsleep = false;
     private final Runnable mIdleSleep = this::sleepCamera;
     private long mRecordStartMs = 0;    // elapsedRealtime at record start, for the on-screen clock
+    private BlurBudgetController mBlurBudget = null;   // #38; created on demand, default off
+    private volatile boolean mHoldStill = false;      // shown in the readout when moving too fast
 
     //Owned by the activity
     private CameraCaptureActivity.CameraHandler getmCameraHandler() {
@@ -525,6 +527,19 @@ public class CameraCaptureFragment extends Fragment
                 androidx.preference.PreferenceManager.getDefaultSharedPreferences(getActivity());
         mRenderer.setEncoderPrefs(prefs.getString("video_codec", VideoEncoderCore.DEFAULT_MIME_TYPE),
                 prefs.getInt("video_bitrate_mbps", 0) * 1_000_000);
+
+        // Blur budget (#38): only when explicitly enabled AND exposure is allowed to float —
+        // a locked radiometry has nothing for it to do. Default off, so this is normally skipped.
+        boolean budgetOn = prefs.getBoolean("blur_budget", false)
+                && !prefs.getBoolean("lock_radiometry", true);
+        if (budgetOn && camera2Proxy != null) {
+            if (mBlurBudget == null) {
+                mBlurBudget = new BlurBudgetController(getmImuManager(), camera2Proxy,
+                        (holdStill, smearPx, capNs) -> mHoldStill = holdStill);
+            }
+            mBlurBudget.start(prefs.getInt("blur_budget_px", 3));
+        }
+
         mGLView.queueEvent(new Runnable() {
             @Override
             public void run() {
@@ -536,6 +551,10 @@ public class CameraCaptureFragment extends Fragment
 
     private void stopRecording() {
         Log.d(TAG, "Stop recording");
+        if (mBlurBudget != null) {
+            mBlurBudget.stop();
+        }
+        mHoldStill = false;
         Camera2Proxy camera2Proxy = getmCamera2Proxy();
         if (camera2Proxy != null) {
             camera2Proxy.stopRecordingCaptureResult();
@@ -590,7 +609,8 @@ public class CameraCaptureFragment extends Fragment
                 heat = String.format(Locale.getDefault(), "%.0f°C|", c);
             }
         }
-        final String line = "|" + clock + sfl + "|" + sexpotime + "|" + imuHz + "|" + heat;
+        final String hold = (mHoldStill && mRecordingEnabled) ? "HOLD STILL|" : "";
+        final String line = "|" + hold + clock + sfl + "|" + sexpotime + "|" + imuHz + "|" + heat;
 
         getActivity().runOnUiThread(() -> {
             if (mCaptureResultText != null) {

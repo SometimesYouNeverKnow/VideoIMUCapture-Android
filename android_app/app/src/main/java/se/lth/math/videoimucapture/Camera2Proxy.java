@@ -28,6 +28,7 @@ import androidx.annotation.NonNull;
 
 import androidx.preference.PreferenceManager;
 import android.util.Log;
+import android.util.Range;
 import android.util.Size;
 import android.view.Surface;
 
@@ -411,6 +412,49 @@ public class Camera2Proxy {
     /** Public entry for modes that want the whole run radiometrically frozen. */
     public void lockAutoAlgorithms(boolean lock) {
         setAutoAlgorithmLock(lock);
+    }
+
+    // --- Blur budget (#38): a gyro-driven cap on exposure, expressed through the AE target FPS
+    // range because that is the portable, auto-exposure-compatible way to bound exposure time
+    // (exposure <= 1 / lowerFps). Everything here is a no-op unless the controller is enabled.
+
+    /** The device's available AE target FPS ranges, or an empty array. */
+    public Range<Integer>[] getAvailableFpsRanges() {
+        Range<Integer>[] r = mCameraCharacteristics != null
+                ? mCameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                : null;
+        return r != null ? r : new Range[0];
+    }
+
+    /** Set the AE target FPS range on the LIVE preview/record request, or clear it (null). */
+    public void setAeTargetFpsRange(Range<Integer> range) {
+        if (mCaptureSession == null || mPreviewRequestBuilder == null) {
+            return;
+        }
+        try {
+            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, range);
+            mCaptureSession.setRepeatingRequest(
+                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+        } catch (CameraAccessException | IllegalStateException e) {
+            Log.w(TAG, "Could not set AE target FPS range: " + e);
+        }
+    }
+
+    /** Focal length in pixels for the current frame, or 0 if not yet known. */
+    public float getFocalPixels() {
+        Float f = mFocalLengthHelper.getFocalLengthPixel();
+        return f != null ? f : 0f;
+    }
+
+    /** Most recent metered exposure time in ns, or 0. */
+    public long getLastExposureNs() {
+        if (mLastResult != null) {
+            Long e = mLastResult.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+            if (e != null) {
+                return e;
+            }
+        }
+        return 0L;
     }
 
     /**
