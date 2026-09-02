@@ -71,13 +71,25 @@ public class IMUManager extends SensorEventCallback {
     private Sensor mRotVec;
     private Sensor mGameRotVec;
     private Sensor mGeoRotVec;
-    // Light (ReconStab #39): the standard ambient-light sensor gives lux; Samsung's vendor
-    // light-CCT sensor (found by string type, permission-free on the S24U) gives colour
-    // temperature and a wide-IR channel. The value LAYOUT of the vendor sensor is not
-    // documented — its first two values are recorded as cct_k and ir and must be verified
-    // against a known light source before they are trusted as anything but "it changed".
+    // Light (ReconStab #39): the standard ambient-light sensor gives lux. The vendor sensors
+    // are separate and each has to be asked for by name.
+    //
+    // VERIFIED on an S24U 2026-09-02, and it was not what this code assumed. Samsung ships
+    // THREE vendor light sensors on the STK33F11: light_cct ("Light Strm"), light_ir
+    // ("Light Strm WideIR ALS") and auto_brightness. The first two values of light_cct are
+    // NOT colour temperature — they track illuminance, matching the standard sensor's lux to
+    // the integer (lux 164.03 / 164.97 against cct 164 / 165 across a whole clip). Recorded
+    // as cct_k they were a plausible wrong number, which is worse than a missing one. So
+    // cct_k is now written only when the value is physically a colour temperature at all,
+    // and the wide-IR channel is read from the sensor that actually carries it.
     private Sensor mLight;
     private Sensor mLightCct;
+    private Sensor mLightIr;
+    // No real light source is below this or above it; candlelight is ~1700 K and a clear
+    // north sky tops out near 27000 K. A reading outside the range is some other quantity.
+    private static final float CCT_MIN_K = 1000f;
+    private static final float CCT_MAX_K = 40000f;
+    private boolean mCctImplausibleLogged = false;
     private volatile float mLastLux = Float.NaN;
     private volatile float mLastCct = 0f;
     private volatile float mLastIr = 0f;
@@ -135,6 +147,7 @@ public class IMUManager extends SensorEventCallback {
         mGeoRotVec = mSensorManager.getDefaultSensor(Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR);
         mLight = mSensorManager.getDefaultSensor(Sensor.TYPE_LIGHT);
         mLightCct = findVendorSensor("light_cct");
+        mLightIr = findVendorSensor("light_ir");
     }
 
     /**
@@ -472,14 +485,32 @@ public class IMUManager extends SensorEventCallback {
             if (mRecordingInertialData) {
                 writeAuxData(event);
             }
-        } else if (event.sensor.getType() == Sensor.TYPE_LIGHT || event.sensor == mLightCct) {
-            // Light family: lux and CCT arrive as separate events; cache each and write a
-            // LightData carrying the freshest of both, so one message is a complete reading.
+        } else if (event.sensor.getType() == Sensor.TYPE_LIGHT
+                || event.sensor == mLightCct || event.sensor == mLightIr) {
+            // Light family: lux, CCT and wide-IR arrive as separate events from separate
+            // sensors; cache each and write a LightData carrying the freshest of all three,
+            // so one message is a complete reading.
             if (event.sensor.getType() == Sensor.TYPE_LIGHT) {
                 mLastLux = event.values[0];
+            } else if (event.sensor == mLightIr) {
+                mLastIr = event.values.length > 0 ? event.values[0] : 0f;
             } else {
-                mLastCct = event.values.length > 0 ? event.values[0] : 0f;
-                mLastIr = event.values.length > 1 ? event.values[1] : 0f;
+                float v = event.values.length > 0 ? event.values[0] : 0f;
+                if (v >= CCT_MIN_K && v <= CCT_MAX_K) {
+                    mLastCct = v;
+                } else {
+                    // Not a colour temperature. On the S24U this sensor reports illuminance
+                    // here, and writing it as cct_k made the file assert something false.
+                    // Leave the field at 0 — "the device did not tell us" — and say why once.
+                    mLastCct = 0f;
+                    if (!mCctImplausibleLogged) {
+                        mCctImplausibleLogged = true;
+                        Log.w(TAG, String.format(
+                                "%s reports %.1f for values[0], which is not a colour "
+                                        + "temperature; cct_k left unset for this device.",
+                                event.sensor.getStringType(), v));
+                    }
+                }
             }
             if (mRecordingInertialData) {
                 mRecordingWriter.queueData(RecordingProtos.LightData.newBuilder()
@@ -591,6 +622,9 @@ public class IMUManager extends SensorEventCallback {
         }
         if (mLightCct != null) {
             mSensorManager.registerListener(this, mLightCct, SensorManager.SENSOR_DELAY_NORMAL, sensorHandler);
+        }
+        if (mLightIr != null) {
+            mSensorManager.registerListener(this, mLightIr, SensorManager.SENSOR_DELAY_NORMAL, sensorHandler);
         }
     }
 
