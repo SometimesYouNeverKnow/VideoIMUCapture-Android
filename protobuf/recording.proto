@@ -1,5 +1,20 @@
 syntax = "proto3";
 
+// A note on `optional`, added 2026-09-02 after a field test.
+//
+// proto3 does not put a scalar on the wire when its value is the default, so a field
+// holding 0 is byte-identical to a field never set. For most of this schema that is
+// harmless. For a handful it was silently destroying the reading that mattered most:
+// LENS_STATE 0 is STATIONARY (the state that says a frame's intrinsics can be trusted),
+// THERMAL_STATUS 0 is NONE (the normal case, so the file could only ever say "throttling"),
+// AE/AWB_STATE 0 is INACTIVE, TONEMAP_MODE 0 is CONTRAST_CURVE, and 0 lux is a dark room --
+// which is exactly the condition this fork cares about measuring. Every one of those read
+// back as "the device did not report it".
+//
+// `optional` on a proto3 scalar restores explicit presence, so a recorded 0 survives. It is
+// wire-compatible: same field numbers, same encoding, and readers that predate the change
+// parse these files unchanged.
+
 import "google/protobuf/timestamp.proto";
 
 package videoimu;
@@ -90,15 +105,15 @@ message VideoFrameMetaData {
   // (#28) be undone at bake time and what put a number behind the ISO ceiling (#38).
   repeated float color_correction_gains = 13;      // R, G_even, G_odd, B — the white-balance gains applied to THIS frame
   repeated float color_correction_transform = 14;  // 3x3 sensor-to-sRGB colour matrix, row-major
-  int32 tonemap_mode = 15;                          // CONTROL_TONEMAP_MODE; a tone change mid-clip is otherwise invisible
+  optional int32 tonemap_mode = 15;                          // CONTROL_TONEMAP_MODE; a tone change mid-clip is otherwise invisible
   int32 post_raw_sensitivity_boost = 16;            // digital gain the HAL applied AFTER the sensor; ISO alone understates total gain
   repeated float dynamic_black_level = 17;          // SENSOR_DYNAMIC_BLACK_LEVEL, per CFA channel
-  int32 ae_state = 18;                              // CONTROL_AE_STATE (searching/converged/locked/flash_required)
-  int32 awb_state = 19;                             // CONTROL_AWB_STATE
-  int32 ae_mode = 20;                               // CONTROL_AE_MODE (on/off) — says whether exposure was auto for this frame
-  int32 awb_mode = 21;                              // CONTROL_AWB_MODE
+  optional int32 ae_state = 18;                              // CONTROL_AE_STATE (searching/converged/locked/flash_required)
+  optional int32 awb_state = 19;                             // CONTROL_AWB_STATE
+  optional int32 ae_mode = 20;                               // CONTROL_AE_MODE (on/off) — says whether exposure was auto for this frame
+  optional int32 awb_mode = 21;                              // CONTROL_AWB_MODE
   float lens_aperture = 22;                         // LENS_APERTURE (f-number); fixed on this phone, recorded per frame anyway
-  int32 lens_state = 23;                            // LENS_STATE: 0 stationary, 1 moving — was the lens settling at the shutter
+  optional int32 lens_state = 23;                            // LENS_STATE: 0 stationary, 1 moving — was the lens settling at the shutter
   repeated double noise_profile = 24;               // SENSOR_NOISE_PROFILE, flattened (S,O) pairs per channel — the noise model at this ISO
   // LENS_INTRINSIC_CALIBRATION as a PER-FRAME result (#31), where the HAL provides it dynamically
   // rather than only as a static characteristic: fx, fy, cx, cy, skew in sensor-array pixels. This
@@ -125,7 +140,7 @@ message EnvironmentData {
 message ThermalData {
   int64 time_ns = 1;
   float battery_temp_c = 2;
-  int32 thermal_status = 3;
+  optional int32 thermal_status = 3;
   float thermal_headroom = 4;
 }
 
@@ -135,7 +150,7 @@ message ThermalData {
 // vendor light-CCT sensor where it exists, else 0/absent. On the sensor clock.
 message LightData {
   int64 time_ns = 1;
-  float lux = 2;
+  optional float lux = 2;
   float cct_k = 3;         // correlated colour temperature, Kelvin; 0 if the device has no CCT sensor
   float ir = 4;            // wide-IR channel, raw units; 0 if unavailable
 }
