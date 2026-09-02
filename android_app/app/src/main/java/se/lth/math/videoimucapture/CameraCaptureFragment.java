@@ -73,6 +73,7 @@ public class CameraCaptureFragment extends Fragment
     private long mRecordStartMs = 0;    // elapsedRealtime at record start, for the on-screen clock
     private BlurBudgetController mBlurBudget = null;   // #38; created on demand, default off
     private volatile boolean mHoldStill = false;      // shown in the readout when moving too fast
+    private volatile float mSmearPx = -1f;            // predicted motion smear of the current frame
 
     //Owned by the activity
     private CameraCaptureActivity.CameraHandler getmCameraHandler() {
@@ -535,9 +536,13 @@ public class CameraCaptureFragment extends Fragment
         if (budgetOn && camera2Proxy != null) {
             if (mBlurBudget == null) {
                 mBlurBudget = new BlurBudgetController(getmImuManager(), camera2Proxy,
-                        (holdStill, smearPx, capNs) -> mHoldStill = holdStill);
+                        (holdStill, smearPx, capNs) -> {
+                            mHoldStill = holdStill;
+                            mSmearPx = smearPx;
+                        });
             }
-            mBlurBudget.start(prefs.getInt("blur_budget_px", 3));
+            mBlurBudget.start(prefs.getInt("blur_budget_px", 3),
+                    prefs.getInt("hold_still_px", 40));
         }
 
         mGLView.queueEvent(new Runnable() {
@@ -555,6 +560,7 @@ public class CameraCaptureFragment extends Fragment
             mBlurBudget.stop();
         }
         mHoldStill = false;
+        mSmearPx = -1f;
         Camera2Proxy camera2Proxy = getmCamera2Proxy();
         if (camera2Proxy != null) {
             camera2Proxy.stopRecordingCaptureResult();
@@ -609,8 +615,13 @@ public class CameraCaptureFragment extends Fragment
                 heat = String.format(Locale.getDefault(), "%.0f°C|", c);
             }
         }
+        // The measured smear, always, when the budget is running. The alarm is the exception;
+        // the number is the information, and it is what lets the operator learn where their own
+        // threshold belongs instead of being nagged by a constant.
         final String hold = (mHoldStill && mRecordingEnabled) ? "HOLD STILL|" : "";
-        final String line = "|" + hold + clock + sfl + "|" + sexpotime + "|" + imuHz + "|" + heat;
+        final String smear = (mSmearPx >= 0f && mRecordingEnabled)
+                ? String.format(Locale.getDefault(), "SMEAR %.0fpx|", mSmearPx) : "";
+        final String line = "|" + hold + smear + clock + sfl + "|" + sexpotime + "|" + imuHz + "|" + heat;
 
         getActivity().runOnUiThread(() -> {
             if (mCaptureResultText != null) {

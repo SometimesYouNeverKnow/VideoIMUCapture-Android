@@ -124,7 +124,16 @@
             app:min="1"
             android:max="15"
             app:defaultValue="3"
-            app:summary="Target maximum motion smear per frame, pixels."/>
+            app:summary="Target maximum motion smear per frame, pixels. The AE cap aims at this."/>
+
+        <SeekBarPreference
+            app:key="hold_still_px"
+            app:title="Hold-still alarm (pixels)"
+            app:showSeekBarValue="true"
+            app:min="5"
+            android:max="120"
+            app:defaultValue="40"
+            app:summary="Show HOLD STILL when predicted smear passes this. Separate from the budget above, because at 30 fps the budget is not reachable while walking and an alarm tied to it never goes off. The live SMEAR readout tells you where to set this: a measured S24U walk ran 24 px typical, 63 px at its worst."/>
     </PreferenceCategory>
 
     <PreferenceCategory

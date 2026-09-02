@@ -20,11 +20,22 @@ import android.util.Range;
  * byte what it was. When on, it only ever tightens the AE FPS floor within the device's own
  * available ranges; it never sets a manual exposure, so it cannot produce a black frame.
  *
- * WHAT IT CANNOT DO, and why #38 stays partly open: there is no auto-AE knob for an ISO ceiling,
- * so the "let ISO rise, but not past N" half needs manual exposure and is not implemented here.
- * And when even the tightest available FPS range cannot meet the budget — the operator is moving
- * too fast for a sharp frame at this focal length, whatever the light — it raises the "hold still"
- * cue rather than pretending exposure can fix it. UNTESTED on a moving device as written.
+ * WHAT IT CANNOT DO, measured on a real walk 2026-09-02 rather than assumed:
+ *
+ * The AE-target-FPS-range mechanism CANNOT DELIVER THIS BUDGET while walking, and the gap is
+ * not marginal. At 30 fps the shortest exposure the range can force is 1/30 s. That walk ran a
+ * median 0.263 rad/s of rotation at 2777 px focal, which is 24 px of smear at 1/30 s against a
+ * 3 px budget; reaching 3 px would have needed 1/243 s. The only range on the device tight
+ * enough is [60,60], and using it desynchronises the camera from the 30 fps encoder and kills
+ * the recording outright. So this controller can shorten the shutter a little in bright light
+ * and cannot save a walking frame in dim light. Doing that needs SENSOR_EXPOSURE_TIME with AE
+ * off and an ISO ceiling — the manual-exposure half, still not implemented, and now known to
+ * be the ONLY half that can meet the stated goal rather than a refinement of it.
+ *
+ * Because of that, the hold-still cue is no longer tied to the budget. Defined as "no range
+ * meets the budget" it was true 98.4% of a 51.6 s walk, including while standing still, which
+ * is a constant rather than a signal. It is now an alarm on the predicted smear itself, at its
+ * own threshold, alongside a live smear readout.
  */
 public class BlurBudgetController {
     private static final String TAG = "VIMUC-BlurBudget";
@@ -35,7 +46,11 @@ public class BlurBudgetController {
     private static final float MIN_USEFUL_EXPOSURE_S = 0.001f;
 
     public interface Listener {
-        /** holdStill true => moving too fast for the budget at this focal length. */
+        /**
+         * smearPx is the predicted motion smear of the CURRENT frame, at the exposure
+         * the camera actually used -- the honest number, worth showing continuously.
+         * holdStill is true when that number crosses the alarm threshold.
+         */
         void onBlurBudgetState(boolean holdStill, float smearPx, long capExposureNs);
     }
 
@@ -45,6 +60,12 @@ public class BlurBudgetController {
     private final Handler mHandler = new Handler(Looper.getMainLooper());
 
     private float mBudgetPx = 3f;
+    // The alarm threshold, in pixels of predicted smear -- deliberately NOT the same number as
+    // the exposure budget. The budget is a target for the AE cap; this is the point at which
+    // telling the operator to slow down is useful. Defaulted from a measured S24U walk whose
+    // smear ran median 24 px, p95 63 px: 40 px sits around that walk's p80, so it stays quiet
+    // through normal walking and speaks up on a genuine swing.
+    private float mHoldStillPx = 40f;
     private volatile boolean mRunning = false;
     private float mGyroEma = 0f;
     private Range<Integer> mApplied = null;
@@ -67,12 +88,18 @@ public class BlurBudgetController {
     }
 
     public void start(float budgetPx) {
+        start(budgetPx, mHoldStillPx);
+    }
+
+    public void start(float budgetPx, float holdStillPx) {
         mBudgetPx = budgetPx > 0 ? budgetPx : 3f;
+        mHoldStillPx = holdStillPx > 0 ? holdStillPx : 40f;
         mGyroEma = mImu != null ? mImu.getLatestGyroMagnitude() : 0f;
         mRunning = true;
         mHandler.removeCallbacks(mTick);
         mHandler.post(mTick);
-        Log.i(TAG, "blur budget on, " + mBudgetPx + " px");
+        Log.i(TAG, "blur budget on, " + mBudgetPx + " px; hold-still alarm at "
+                + mHoldStillPx + " px");
     }
 
     public void stop() {
@@ -104,11 +131,23 @@ public class BlurBudgetController {
         float smearPx = mGyroEma * focalPx * (metered / 1e9f);
 
         Range<Integer> best = chooseRange(maxExposureS);
-        boolean holdStill = (best == null);   // no range tight enough — motion, not light
         if (best != null && !best.equals(mApplied)) {
             mProxy.setAeTargetFpsRange(best);
             mApplied = best;
         }
+
+        // The cue used to be `best == null` -- "no available FPS range meets the budget".
+        // That is a statement about the DEVICE, not the operator, and on this hardware it is
+        // almost always true: at 30 fps the shortest exposure the AE range can force is
+        // 1/30 s, and a 3 px budget at 2777 px focal needs the operator under 1.9 deg/s.
+        // Measured on a real S24U walk, it was on for 98.4% of 51.6 s -- including while
+        // standing still, because standing still is not 1.9 deg/s. A cue that is always on
+        // carries no information and trains the operator to ignore it.
+        //
+        // So it now says what it can honestly say: how blurred this frame actually is, at the
+        // exposure the camera actually used, and an alarm only when that number is high
+        // enough to be worth acting on. smearPx was already being computed and thrown away.
+        boolean holdStill = smearPx > mHoldStillPx;
         long capExposureNs = best != null ? (long) (1e9 / best.getLower()) : 0L;
         if (mListener != null) {
             mListener.onBlurBudgetState(holdStill, smearPx, capExposureNs);

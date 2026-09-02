@@ -440,8 +440,23 @@ public class Camera2Proxy {
         }
     }
 
-    /** Focal length in pixels for the current frame, or 0 if not yet known. */
+    /**
+     * Focal length in pixels for the current frame, or 0 if not yet known.
+     *
+     * Prefer the HAL's own per-frame LENS_INTRINSIC_CALIBRATION (#31) over the derived
+     * estimate. They disagree, and the derived one is wrong: measured on an S24U walk,
+     * FocalLengthHelper reported 4607 px where the HAL's fx for the same frames was 2777.5.
+     * A blur budget computed from the larger number overestimates smear by 1.66x, so the
+     * hold-still cue fires at 60% of the motion it should -- and the operator is being told
+     * to slow down for blur that is not there.
+     */
     public float getFocalPixels() {
+        if (mLastResult != null) {
+            float[] k = mLastResult.get(CaptureResult.LENS_INTRINSIC_CALIBRATION);
+            if (k != null && k.length >= 1 && k[0] > 0f) {
+                return k[0];
+            }
+        }
         Float f = mFocalLengthHelper.getFocalLengthPixel();
         return f != null ? f : 0f;
     }
