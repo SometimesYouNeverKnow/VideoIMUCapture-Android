@@ -59,7 +59,8 @@ warnings and settings from upstream remain.
 v0.14 added four settings, all aimed at the two things that stop a long capture — heat
 and disk: **Video codec** (H.265/HEVC is 40–50% smaller than H.264 at the same quality
 and keeps more feature matches at a given bitrate; it falls back to H.264 if the device
-has no HEVC encoder), **Video bitrate** (0 = the automatic rate), **Camera sleep** (after
+has no HEVC encoder), **Video bitrate** (0 = automatic: the BPP formula for H.264, 0.55× of it
+for HEVC — measured on the S24U as 94 vs 52 Mbit/s at the full sensor), **Camera sleep** (after
 N idle seconds the preview stops and the sensor goes quiet instead of cooking the phone
 while it waits; tap to wake), and **Freeze exposure while recording** (on = the old
 behaviour, one radiometry per clip; off = auto exposure keeps running through a scene
