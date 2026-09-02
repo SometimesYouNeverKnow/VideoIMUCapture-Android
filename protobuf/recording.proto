@@ -84,6 +84,22 @@ message VideoFrameMetaData {
     int32 bottom = 4;
   }
   Rect crop_region = 12;
+
+  // Per-frame radiometry (ReconStab #39). All read from the CaptureResult that already arrives
+  // for every frame, so these cost nothing to record and are what let a floating auto-exposure
+  // (#28) be undone at bake time and what put a number behind the ISO ceiling (#38).
+  repeated float color_correction_gains = 13;      // R, G_even, G_odd, B — the white-balance gains applied to THIS frame
+  repeated float color_correction_transform = 14;  // 3x3 sensor-to-sRGB colour matrix, row-major
+  int32 tonemap_mode = 15;                          // CONTROL_TONEMAP_MODE; a tone change mid-clip is otherwise invisible
+  int32 post_raw_sensitivity_boost = 16;            // digital gain the HAL applied AFTER the sensor; ISO alone understates total gain
+  repeated float dynamic_black_level = 17;          // SENSOR_DYNAMIC_BLACK_LEVEL, per CFA channel
+  int32 ae_state = 18;                              // CONTROL_AE_STATE (searching/converged/locked/flash_required)
+  int32 awb_state = 19;                             // CONTROL_AWB_STATE
+  int32 ae_mode = 20;                               // CONTROL_AE_MODE (on/off) — says whether exposure was auto for this frame
+  int32 awb_mode = 21;                              // CONTROL_AWB_MODE
+  float lens_aperture = 22;                         // LENS_APERTURE (f-number); fixed on this phone, recorded per frame anyway
+  int32 lens_state = 23;                            // LENS_STATE: 0 stationary, 1 moving — was the lens settling at the shutter
+  repeated double noise_profile = 24;               // SENSOR_NOISE_PROFILE, flattened (S,O) pairs per channel — the noise model at this ISO
 }
 
 // Barometer sample. time_ns is the sensor event timestamp, same clock as IMUData.time_ns.
@@ -105,6 +121,62 @@ message ThermalData {
   float battery_temp_c = 2;
   int32 thermal_status = 3;
   float thermal_headroom = 4;
+}
+
+// Ambient light (ReconStab #39). The illumination the scene HAD, independent of what the camera
+// chose to do about it — the other half of the exposure story of #38, and what lets a floating
+// white balance (#28) be reasoned about. lux is TYPE_LIGHT; cct_k and ir come from Samsung's
+// vendor light-CCT sensor where it exists, else 0/absent. On the sensor clock.
+message LightData {
+  int64 time_ns = 1;
+  float lux = 2;
+  float cct_k = 3;         // correlated colour temperature, Kelvin; 0 if the device has no CCT sensor
+  float ir = 4;            // wide-IR channel, raw units; 0 if unavailable
+}
+
+// Raw GNSS measurements (ReconStab #39/#31/#35): per-satellite pseudorange rate, carrier phase,
+// C/N0 and Doppler that post-processed positioning turns into decimetres where the fused fix
+// gives 3.8 m — the biggest single upgrade available to the scale witness. One message per
+// GnssMeasurementsEvent. time_ns is the GnssClock time; the fixes (GnssData) stay as they are.
+message GnssMeasurementData {
+  int64 time_ns = 1;              // GnssClock.getTimeNanos
+  int64 full_bias_ns = 2;         // GnssClock.getFullBiasNanos, if set (else 0)
+  double bias_ns = 3;             // GnssClock.getBiasNanos, if set
+  double drift_nsps = 4;          // clock drift, ns per second, if set
+
+  message Measurement {
+    int32 svid = 1;
+    int32 constellation = 2;      // GnssStatus.CONSTELLATION_* (GPS=1, GLONASS=3, GALILEO=6, ...)
+    double cn0_dbhz = 3;
+    double pseudorange_rate_mps = 4;
+    double pseudorange_rate_uncertainty_mps = 5;
+    double accumulated_delta_range_m = 6;   // carrier phase
+    int32 accumulated_delta_range_state = 7;
+    double carrier_frequency_hz = 8;         // L1 vs L5 lives here — the dual-frequency signal
+    int32 multipath_indicator = 9;
+    int32 state = 10;
+    double received_sv_time_ns = 11;
+  }
+  repeated Measurement measurements = 5;
+}
+
+// GNSS constellation health (ReconStab #39): how many satellites the fix actually used and their
+// C/N0, so a 3.8 m accuracy claim can be read against a sky half-blocked by a lighthouse.
+message GnssStatusData {
+  int64 time_ns = 1;              // elapsedRealtimeNanos at the status callback
+  int32 satellite_count = 2;
+  int32 used_in_fix_count = 3;
+
+  message Satellite {
+    int32 svid = 1;
+    int32 constellation = 2;
+    float cn0_dbhz = 3;
+    bool used_in_fix = 4;
+    float elevation_deg = 5;
+    float azimuth_deg = 6;
+    float carrier_frequency_hz = 7; // 0 if not reported
+  }
+  repeated Satellite satellites = 4;
 }
 
 // Hardware step counter/detector. counter is cumulative since boot (TYPE_STEP_COUNTER);
@@ -275,6 +347,9 @@ message VideoCaptureData {
   repeated GnssData gnss = 9;
   repeated StillMetaData stills = 10;
   repeated ThermalData thermal = 11;
+  repeated LightData light = 12;
+  repeated GnssMeasurementData gnss_measurement = 13;
+  repeated GnssStatusData gnss_status = 14;
 }
 
 message MessageWrapper {
@@ -290,5 +365,8 @@ message MessageWrapper {
     GnssData gnss_data = 9;
     StillMetaData still_data = 10;
     ThermalData thermal_data = 11;
+    LightData light_data = 12;
+    GnssMeasurementData gnss_measurement_data = 13;
+    GnssStatusData gnss_status_data = 14;
   }
 }

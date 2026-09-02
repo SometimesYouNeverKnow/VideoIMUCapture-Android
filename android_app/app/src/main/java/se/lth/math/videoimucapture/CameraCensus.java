@@ -83,6 +83,12 @@ public class CameraCensus {
             // Vendor keys: anything Samsung exposes beyond the AOSP surface.
             root.put("vendor_keys", vendorKeys(manager));
 
+            // The full sensor inventory (ReconStab #39): what the phone WILL give, so the file
+            // records what was available and not only what the app chose to take. Whether the
+            // app records each one is not stated here — the pb3 stream is the record of that;
+            // this is the menu.
+            root.put("sensors", sensorsJson(context));
+
             File out = new File(context.getExternalFilesDir(null), CENSUS_FILE);
             try (FileOutputStream stream = new FileOutputStream(out)) {
                 stream.write(root.toString(2).getBytes(StandardCharsets.UTF_8));
@@ -135,6 +141,37 @@ public class CameraCensus {
             if (keys.length() > 0) {
                 out.put(id, keys);
             }
+        }
+        return out;
+    }
+
+    /** Every sensor the platform reports, standard and vendor, with rate and permission. */
+    private static JSONArray sensorsJson(Context context) throws JSONException {
+        JSONArray out = new JSONArray();
+        android.hardware.SensorManager sm =
+                (android.hardware.SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
+        if (sm == null) {
+            return out;
+        }
+        for (android.hardware.Sensor s : sm.getSensorList(android.hardware.Sensor.TYPE_ALL)) {
+            JSONObject o = new JSONObject();
+            o.put("name", s.getName());
+            o.put("vendor", s.getVendor());
+            o.put("type", s.getType());
+            o.put("string_type", s.getStringType());
+            o.put("resolution", s.getResolution());
+            o.put("max_range", s.getMaximumRange());
+            o.put("power_ma", s.getPower());
+            // minDelay in microseconds: 0 = on-change, negative = one-shot, positive = the
+            // fastest continuous rate. maxRate is what a "record everything" pass could ask for.
+            o.put("min_delay_us", s.getMinDelay());
+            if (Build.VERSION.SDK_INT >= 21) {
+                o.put("max_delay_us", s.getMaxDelay());
+            }
+            if (Build.VERSION.SDK_INT >= 26) {
+                o.put("is_wakeup", s.isWakeUpSensor());
+            }
+            out.put(o);
         }
         return out;
     }

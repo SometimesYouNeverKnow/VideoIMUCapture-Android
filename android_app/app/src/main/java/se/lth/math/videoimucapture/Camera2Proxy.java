@@ -944,8 +944,82 @@ public class Camera2Proxy {
             }
         }
 
+        writeFrameRadiometry(result, frameBuilder);
+
         mRecordingWriter.queueData(frameBuilder.build());
 
+    }
+
+    /**
+     * Per-frame radiometry (ReconStab #39), everything the CaptureResult already carries so a
+     * floating auto-exposure can be undone at bake time and the ISO ceiling of #38 has a number.
+     * Every field is null-guarded: a HAL may report any subset, and a missing one is silence,
+     * not a zero.
+     */
+    private void writeFrameRadiometry(CaptureResult result,
+                                      RecordingProtos.VideoFrameMetaData.Builder b) {
+        android.hardware.camera2.params.RggbChannelVector gains =
+                result.get(CaptureResult.COLOR_CORRECTION_GAINS);
+        if (gains != null) {
+            b.addColorCorrectionGains(gains.getRed());
+            b.addColorCorrectionGains(gains.getGreenEven());
+            b.addColorCorrectionGains(gains.getGreenOdd());
+            b.addColorCorrectionGains(gains.getBlue());
+        }
+        android.hardware.camera2.params.ColorSpaceTransform xform =
+                result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM);
+        if (xform != null) {
+            for (int row = 0; row < 3; row++) {
+                for (int col = 0; col < 3; col++) {
+                    b.addColorCorrectionTransform(xform.getElement(col, row).floatValue());
+                }
+            }
+        }
+        Integer tonemap = result.get(CaptureResult.TONEMAP_MODE);
+        if (tonemap != null) {
+            b.setTonemapMode(tonemap);
+        }
+        Integer boost = result.get(CaptureResult.CONTROL_POST_RAW_SENSITIVITY_BOOST);
+        if (boost != null) {
+            b.setPostRawSensitivityBoost(boost);
+        }
+        float[] blackLevel = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL);
+        if (blackLevel != null) {
+            for (float v : blackLevel) {
+                b.addDynamicBlackLevel(v);
+            }
+        }
+        Integer aeState = result.get(CaptureResult.CONTROL_AE_STATE);
+        if (aeState != null) {
+            b.setAeState(aeState);
+        }
+        Integer awbState = result.get(CaptureResult.CONTROL_AWB_STATE);
+        if (awbState != null) {
+            b.setAwbState(awbState);
+        }
+        Integer aeMode = result.get(CaptureResult.CONTROL_AE_MODE);
+        if (aeMode != null) {
+            b.setAeMode(aeMode);
+        }
+        Integer awbMode = result.get(CaptureResult.CONTROL_AWB_MODE);
+        if (awbMode != null) {
+            b.setAwbMode(awbMode);
+        }
+        Float aperture = result.get(CaptureResult.LENS_APERTURE);
+        if (aperture != null) {
+            b.setLensAperture(aperture);
+        }
+        Integer lensState = result.get(CaptureResult.LENS_STATE);
+        if (lensState != null) {
+            b.setLensState(lensState);
+        }
+        android.util.Pair<Double, Double>[] noise = result.get(CaptureResult.SENSOR_NOISE_PROFILE);
+        if (noise != null) {
+            for (android.util.Pair<Double, Double> p : noise) {
+                b.addNoiseProfile(p.first);
+                b.addNoiseProfile(p.second);
+            }
+        }
     }
 
     private void startBackgroundThread() {

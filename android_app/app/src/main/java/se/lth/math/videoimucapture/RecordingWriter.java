@@ -22,6 +22,9 @@ import se.lth.math.videoimucapture.RecordingProtos.OrientationData;
 import se.lth.math.videoimucapture.RecordingProtos.GnssData;
 import se.lth.math.videoimucapture.RecordingProtos.StillMetaData;
 import se.lth.math.videoimucapture.RecordingProtos.ThermalData;
+import se.lth.math.videoimucapture.RecordingProtos.LightData;
+import se.lth.math.videoimucapture.RecordingProtos.GnssMeasurementData;
+import se.lth.math.videoimucapture.RecordingProtos.GnssStatusData;
 import se.lth.math.videoimucapture.RecordingProtos.MessageWrapper;
 
 import static java.lang.Math.abs;
@@ -170,6 +173,21 @@ public class RecordingWriter implements Runnable{
                 VideoCaptureData.newBuilder().addThermal(msg.getThermalData())
                         .build().writeTo(mFileStream);
                 break;
+            case LIGHT_DATA:
+                if (VERBOSE) Log.d(TAG,"Got Light data");
+                VideoCaptureData.newBuilder().addLight(msg.getLightData())
+                        .build().writeTo(mFileStream);
+                break;
+            case GNSS_MEASUREMENT_DATA:
+                if (VERBOSE) Log.d(TAG,"Got GNSS measurement data");
+                VideoCaptureData.newBuilder().addGnssMeasurement(msg.getGnssMeasurementData())
+                        .build().writeTo(mFileStream);
+                break;
+            case GNSS_STATUS_DATA:
+                if (VERBOSE) Log.d(TAG,"Got GNSS status data");
+                VideoCaptureData.newBuilder().addGnssStatus(msg.getGnssStatusData())
+                        .build().writeTo(mFileStream);
+                break;
         }
     }
 
@@ -253,6 +271,15 @@ public class RecordingWriter implements Runnable{
     }
     public void queueData(ThermalData msg) {
         queueData(MessageWrapper.newBuilder().setThermalData(msg).build());
+    }
+    public void queueData(LightData msg) {
+        queueData(MessageWrapper.newBuilder().setLightData(msg).build());
+    }
+    public void queueData(GnssMeasurementData msg) {
+        queueData(MessageWrapper.newBuilder().setGnssMeasurementData(msg).build());
+    }
+    public void queueData(GnssStatusData msg) {
+        queueData(MessageWrapper.newBuilder().setGnssStatusData(msg).build());
     }
 
 }

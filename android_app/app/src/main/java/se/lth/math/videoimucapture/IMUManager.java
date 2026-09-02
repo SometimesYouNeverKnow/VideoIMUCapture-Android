@@ -71,6 +71,16 @@ public class IMUManager extends SensorEventCallback {
     private Sensor mRotVec;
     private Sensor mGameRotVec;
     private Sensor mGeoRotVec;
+    // Light (ReconStab #39): the standard ambient-light sensor gives lux; Samsung's vendor
+    // light-CCT sensor (found by string type, permission-free on the S24U) gives colour
+    // temperature and a wide-IR channel. The value LAYOUT of the vendor sensor is not
+    // documented — its first two values are recorded as cct_k and ir and must be verified
+    // against a known light source before they are trusted as anything but "it changed".
+    private Sensor mLight;
+    private Sensor mLightCct;
+    private volatile float mLastLux = Float.NaN;
+    private volatile float mLastCct = 0f;
+    private volatile float mLastIr = 0f;
 
     private final Context mAppContext;
 
@@ -120,6 +130,26 @@ public class IMUManager extends SensorEventCallback {
         mRotVec = mSensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
         mGameRotVec = mSensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
         mGeoRotVec = mSensorManager.getDefaultSensor(Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR);
+        mLight = mSensorManager.getDefaultSensor(Sensor.TYPE_LIGHT);
+        mLightCct = findVendorSensor("light_cct");
+    }
+
+    /**
+     * A vendor sensor located by a substring of its string type (e.g. "light_cct"), because
+     * getDefaultSensor only knows the AOSP types and the useful Samsung ones are not among them.
+     * Returns the first permission-free match, or null.
+     */
+    private Sensor findVendorSensor(String stringTypeContains) {
+        // Match by string type only. A sensor guarded by a permission we lack simply fails to
+        // register (registerListener returns false), which is harmless — there is no public
+        // Sensor API to read the required permission, so we let the registration be the test.
+        for (Sensor s : mSensorManager.getSensorList(Sensor.TYPE_ALL)) {
+            String st = s.getStringType();
+            if (st != null && st.contains(stringTypeContains)) {
+                return s;
+            }
+        }
+        return null;
     }
 
     private boolean hasStepPermission() {
@@ -432,6 +462,23 @@ public class IMUManager extends SensorEventCallback {
             if (mRecordingInertialData) {
                 writeAuxData(event);
             }
+        } else if (event.sensor.getType() == Sensor.TYPE_LIGHT || event.sensor == mLightCct) {
+            // Light family: lux and CCT arrive as separate events; cache each and write a
+            // LightData carrying the freshest of both, so one message is a complete reading.
+            if (event.sensor.getType() == Sensor.TYPE_LIGHT) {
+                mLastLux = event.values[0];
+            } else {
+                mLastCct = event.values.length > 0 ? event.values[0] : 0f;
+                mLastIr = event.values.length > 1 ? event.values[1] : 0f;
+            }
+            if (mRecordingInertialData) {
+                mRecordingWriter.queueData(RecordingProtos.LightData.newBuilder()
+                        .setTimeNs(event.timestamp)
+                        .setLux(Float.isNaN(mLastLux) ? 0f : mLastLux)
+                        .setCctK(mLastCct)
+                        .setIr(mLastIr)
+                        .build());
+            }
         } else if (mRecordingInertialData) {
             // Auxiliary sensors: no interpolation against the gyro clock — each sample is
             // written as its own message with its own hardware timestamp.
@@ -527,6 +574,13 @@ public class IMUManager extends SensorEventCallback {
         }
         if (mGeoRotVec != null) {
             mSensorManager.registerListener(this, mGeoRotVec, mDerivedRate, sensorHandler);
+        }
+        // Light sensors are event-driven (they report on change), so NORMAL delay is right.
+        if (mLight != null) {
+            mSensorManager.registerListener(this, mLight, SensorManager.SENSOR_DELAY_NORMAL, sensorHandler);
+        }
+        if (mLightCct != null) {
+            mSensorManager.registerListener(this, mLightCct, SensorManager.SENSOR_DELAY_NORMAL, sensorHandler);
         }
     }
 

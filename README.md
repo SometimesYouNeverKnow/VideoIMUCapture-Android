@@ -44,6 +44,13 @@ are welcome, and fixes arrive on hobby time, if at all.
   every five seconds while recording, on the sensor clock — because the phone cooks
   after a minute or two of recording and the barometer drifts with it, and until now
   the file could not say how hot it was when that happened.
+- **More of the sensor suite** (v0.15): ambient light (lux) and, where the device has a
+  vendor colour-temperature sensor, CCT and wide-IR; raw GNSS measurements (per-satellite
+  pseudorange rate, carrier phase, C/N0, dual-frequency) and constellation status; a full
+  `SensorManager` inventory in the census; and per-frame camera radiometry (white-balance
+  gains and colour transform, tonemap mode, dynamic black level, post-RAW boost, AE/AWB
+  state, lens state and aperture, noise profile). The file records what the phone offers,
+  not only what an earlier build thought to take.
 
 Everything lands in `Android/data/se.lth.math.videoimucapture/files/<date>/` as
 `video_recording.mp4` plus a protobuf sidecar (`video_meta.pb3`), stills alongside.
