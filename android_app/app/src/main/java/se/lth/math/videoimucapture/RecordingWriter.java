@@ -41,9 +41,17 @@ public class RecordingWriter implements Runnable{
     //Empty message as poison pill
     private final MessageWrapper mPoisonPill = MessageWrapper.newBuilder().build();
 
-    //Queues to handle merging of video frames
+    // Queues to handle merging of video frames. tryVideoDataMerge() can only drain these in
+    // PAIRS, so if one side is produced faster than the other for any sustained period the
+    // faster queue fills and never empties. That is not hypothetical: a camera running at a
+    // higher rate than the encoder does it in seconds, and so does an encoder stalling under
+    // thermal load on a long capture. add() throws IllegalStateException when full, which on
+    // this thread is fatal to the whole app and takes the clip with it, so these are filled
+    // through offerDropOldest() instead: an unmatchable frame is dropped, and counted.
     private Queue<VideoFrameMetaData> mFrameDataQueue = new ArrayBlockingQueue<>(100);
     private Queue<VideoFrameToTimestamp> mFrameTimeQueue = new ArrayBlockingQueue<>(100);
+    private int mFrameMetaDropped = 0;
+    private int mFrameTimeDropped = 0;
 
     //Other state variables
     private Boolean mIsRecording = false;
@@ -97,6 +105,21 @@ public class RecordingWriter implements Runnable{
         } catch (IOException e) {
             //TODO:SOMETHING USEFUL
             Log.e(TAG,"Write error, SHOULD stop recording!!!!!" + e);
+        } catch (RuntimeException e) {
+            // Nothing here is worth losing the recording over. An uncaught throw on this
+            // thread reaches the default handler and kills the process, and the mp4 is then
+            // whatever the muxer had flushed — on 2026-09-02 that cost a 97 MB clip to a
+            // queue bug. Salvage the sidecar and let the exception be a bug report, not a
+            // data loss.
+            Log.e(TAG, "Unexpected error in writer, closing file to salvage the clip", e);
+            try {
+                mFileStream.flush();
+                mFileStream.close();
+            } catch (IOException io) {
+                Log.e(TAG, "and the salvage failed too: " + io);
+            }
+            mIsRecording = false;
+            throw e;
         }
     }
 
@@ -120,12 +143,20 @@ public class RecordingWriter implements Runnable{
         switch (msgCase) {
             case FRAME_META:
                 if (VERBOSE) Log.d(TAG,"Got Frame Meta");
-                mFrameDataQueue.add(msg.getFrameMeta());
+                if (!mFrameDataQueue.offer(msg.getFrameMeta())) {
+                    mFrameDataQueue.poll();                     // oldest will never find a partner
+                    mFrameDataQueue.offer(msg.getFrameMeta());
+                    countDrop(true);
+                }
                 tryVideoDataMerge();
                 break;
             case FRAME_TIME:
                 if (VERBOSE) Log.d(TAG,"Got Frame Time");
-                mFrameTimeQueue.add(msg.getFrameTime());
+                if (!mFrameTimeQueue.offer(msg.getFrameTime())) {
+                    mFrameTimeQueue.poll();
+                    mFrameTimeQueue.offer(msg.getFrameTime());
+                    countDrop(false);
+                }
                 tryVideoDataMerge();
                 break;
             case IMU_DATA:
@@ -191,6 +222,21 @@ public class RecordingWriter implements Runnable{
         }
     }
 
+
+    /**
+     * A dropped frame record is a hole in the file, so say so. Loudly on the first one —
+     * that is the moment the two streams came apart and the reason is still in the log
+     * above it — then every 100th, so a sustained mismatch does not bury the log.
+     */
+    private void countDrop(boolean meta) {
+        int n = meta ? ++mFrameMetaDropped : ++mFrameTimeDropped;
+        if (n == 1 || n % 100 == 0) {
+            Log.w(TAG, String.format(
+                    "frame %s queue full, dropped oldest (%d so far; meta=%d time=%d queued). "
+                            + "The camera and the encoder are running at different rates.",
+                    meta ? "meta" : "time", n, mFrameDataQueue.size(), mFrameTimeQueue.size()));
+        }
+    }
 
     private void tryVideoDataMerge() throws IOException {
         if (VERBOSE)  Log.d(TAG, String.format("Trying to merge, Queue lengths: %d,%d", mFrameDataQueue.size(), mFrameTimeQueue.size()));

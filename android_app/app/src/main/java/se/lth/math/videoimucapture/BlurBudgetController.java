@@ -127,6 +127,17 @@ public class BlurBudgetController {
         Range<Integer> chosen = null;
         Range<Integer> tightest = null;   // fallback: the highest floor available
         for (Range<Integer> r : avail) {
+            // A range whose UPPER bound exceeds the encoder's rate does not merely cap
+            // exposure — it speeds the camera up. The capture stream then delivers frame
+            // metadata faster than the encoder delivers frames, the recorder's two
+            // frame-merge queues drift apart, and the one that runs ahead grows without
+            // bound. Measured on an S24U 2026-09-02: the fallback below picked [60,60]
+            // against a 30 fps encoder and the recording died 17 s in with "Queue full".
+            // Whatever the budget asks for, the cadence stays the encoder's; a range that
+            // would change it is not a candidate, not even as a last resort.
+            if (r.getUpper() > CAPTURE_FPS) {
+                continue;
+            }
             if (tightest == null || r.getLower() > tightest.getLower()) {
                 tightest = r;
             }
