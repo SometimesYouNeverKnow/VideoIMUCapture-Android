@@ -100,6 +100,12 @@ message VideoFrameMetaData {
   float lens_aperture = 22;                         // LENS_APERTURE (f-number); fixed on this phone, recorded per frame anyway
   int32 lens_state = 23;                            // LENS_STATE: 0 stationary, 1 moving — was the lens settling at the shutter
   repeated double noise_profile = 24;               // SENSOR_NOISE_PROFILE, flattened (S,O) pairs per channel — the noise model at this ISO
+  // LENS_INTRINSIC_CALIBRATION as a PER-FRAME result (#31), where the HAL provides it dynamically
+  // rather than only as a static characteristic: fx, fy, cx, cy, skew in sensor-array pixels. This
+  // is the hardware's own focal for THIS frame — it moves with focus breathing, which a frozen
+  // factory value cannot see, and is exactly what a focal-refining solve wants to compare against.
+  // Empty on devices that only expose the static value.
+  repeated float lens_intrinsic_calibration = 25;
 }
 
 // Barometer sample. time_ns is the sensor event timestamp, same clock as IMUData.time_ns.

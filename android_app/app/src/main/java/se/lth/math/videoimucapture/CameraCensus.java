@@ -5,6 +5,7 @@ import android.graphics.ImageFormat;
 import android.graphics.Rect;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.os.Build;
 import android.util.Log;
@@ -306,6 +307,19 @@ public class CameraCensus {
         putValue(o, "SENSOR_INFO_WHITE_LEVEL", ch.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL));
         putValue(o, "SENSOR_INFO_COLOR_FILTER_ARRANGEMENT",
                 ch.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT));
+
+        // Which keys the HAL reports PER FRAME (a CaptureResult) vs only statically. This is how
+        // we learn whether LENS_INTRINSIC_CALIBRATION is available per frame (#31) rather than
+        // only as the factory characteristic — recorded as names so the answer is in the file.
+        try {
+            JSONArray resultKeys = new JSONArray();
+            for (CaptureResult.Key<?> k : ch.getAvailableCaptureResultKeys()) {
+                resultKeys.put(k.getName());
+            }
+            o.put("available_result_keys", resultKeys);
+        } catch (Exception ignored) {
+            // getAvailableCaptureResultKeys can throw on some devices; the absence is itself data.
+        }
 
         StreamConfigurationMap map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
         if (map != null) {

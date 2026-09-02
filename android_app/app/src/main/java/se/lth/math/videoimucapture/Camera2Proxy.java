@@ -1064,6 +1064,14 @@ public class Camera2Proxy {
                 b.addNoiseProfile(p.second);
             }
         }
+        // Per-frame lens intrinsics, IF the HAL reports them dynamically (#31). Most devices only
+        // expose the static characteristic; where this is non-null it captures focus breathing.
+        float[] intrinsics = result.get(CaptureResult.LENS_INTRINSIC_CALIBRATION);
+        if (intrinsics != null) {
+            for (float v : intrinsics) {
+                b.addLensIntrinsicCalibration(v);
+            }
+        }
     }
 
     private void startBackgroundThread() {
