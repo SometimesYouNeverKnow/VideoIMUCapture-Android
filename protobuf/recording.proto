@@ -165,6 +165,25 @@ message GnssMeasurementData {
   double bias_ns = 3;             // GnssClock.getBiasNanos, if set
   double drift_nsps = 4;          // clock drift, ns per second, if set
 
+  // The rest of GnssClock, added 2026-09-02. These are not completeness for its own sake:
+  // without them a raw-measurement file cannot be post-processed, however clean the
+  // measurements are.
+  //
+  // hardware_clock_discontinuity_count is the one that decides it. The receiver clock can
+  // jump, and when it does the carrier-phase count restarts; a PPK solver that cannot see
+  // the jump carries the break straight into the position. It must be recorded per epoch.
+  optional int64 elapsed_realtime_ns = 6;        // getElapsedRealtimeNanos -- the SENSOR clock.
+                                                 // This is what joins a GNSS epoch to a video
+                                                 // frame; the fixes carry it, the raw
+                                                 // measurements did not, which made them
+                                                 // unjoinable to anything else in the file.
+  optional double elapsed_realtime_uncertainty_ns = 7;
+  optional int32 hardware_clock_discontinuity_count = 8;
+  optional int32 leap_second = 9;
+  optional double time_uncertainty_ns = 10;
+  optional double bias_uncertainty_ns = 11;
+  optional double drift_uncertainty_nsps = 12;
+
   message Measurement {
     int32 svid = 1;
     int32 constellation = 2;      // GnssStatus.CONSTELLATION_* (GPS=1, GLONASS=3, GALILEO=6, ...)
@@ -177,6 +196,31 @@ message GnssMeasurementData {
     int32 multipath_indicator = 9;
     int32 state = 10;
     double received_sv_time_ns = 11;
+
+    // Added 2026-09-02, for the same reason as the clock fields above.
+    //
+    // time_offset_ns is the other one that decides it. Every measurement in an epoch is
+    // taken at a slightly different instant, and this is that offset from the clock time.
+    // RINEX observations are built from (clock time + this); without it every satellite in
+    // the epoch is placed at the same instant, which is wrong by enough to matter at the
+    // decimetre level the raw measurements exist to reach.
+    optional double time_offset_ns = 12;
+    optional int64 received_sv_time_uncertainty_ns = 13;
+    optional double accumulated_delta_range_uncertainty_m = 14;
+    // The observation code -- "C", "L", "I", "Q", "X" and so on. RINEX 3 names each
+    // observation by band AND code, so a file without this cannot be written out as RINEX
+    // without guessing which signal was tracked.
+    optional string code_type = 15;
+    // Post-correlation C/N0. Unlike cn0_dbhz it excludes antenna gain, which is what makes
+    // it comparable across devices.
+    optional double baseband_cn0_dbhz = 16;
+    // Inter-signal biases: the hardware delay difference between this signal and the
+    // reference one. Combining constellations or L1 with L5 without removing these leaves a
+    // metres-level offset that looks exactly like a position error.
+    optional double full_inter_signal_bias_ns = 17;
+    optional double full_inter_signal_bias_uncertainty_ns = 18;
+    optional double satellite_inter_signal_bias_ns = 19;
+    optional double satellite_inter_signal_bias_uncertainty_ns = 20;
   }
   repeated Measurement measurements = 5;
 }
@@ -355,6 +399,44 @@ message IMUData {
   Accuracy mag_accuracy = 10;
 }
 
+// GNSS navigation messages (ReconStab, added 2026-09-02): the broadcast ephemeris, raw.
+//
+// Raw pseudoranges say how far each satellite was. They do not say where the satellite WAS,
+// and without that a measurement file is a set of distances to unknown points. The orbit comes
+// from the navigation message the satellite transmits, and this records those subframes
+// verbatim so the clip carries its own orbits instead of depending on an IGS archive still
+// serving that day years from now.
+message GnssNavigationMessageData {
+  int64 time_ns = 1;              // elapsedRealtimeNanos at the callback -- the sensor clock
+  int32 svid = 2;
+  int32 type = 3;                 // GnssNavigationMessage.TYPE_* (constellation + message type)
+  int32 status = 4;               // STATUS_PARITY_PASSED / REBUILT / UNKNOWN
+  int32 message_id = 5;           // -1 when not applicable
+  int32 submessage_id = 6;
+  bytes data = 7;                 // the raw subframe bytes, exactly as broadcast
+}
+
+// GNSS antenna geometry (ReconStab, added 2026-09-02). Device-static, written once per
+// recording so the clip stands alone.
+//
+// Every position from these measurements is the position of the ANTENNA PHASE CENTRE, which
+// is not where the phone is and is not the same place at L1 as at L5. At the metres level
+// nobody cares. At the decimetres the raw measurements exist to reach, a few centimetres of
+// unmodelled offset is a meaningful part of the error budget -- and it is a fixed, knowable
+// offset, which makes leaving it out the easiest kind of mistake to stop making.
+message GnssAntennaInfoData {
+  double carrier_frequency_mhz = 1;
+  double phase_center_offset_x_mm = 2;
+  double phase_center_offset_y_mm = 3;
+  double phase_center_offset_z_mm = 4;
+  double phase_center_offset_x_uncertainty_mm = 5;
+  double phase_center_offset_y_uncertainty_mm = 6;
+  double phase_center_offset_z_uncertainty_mm = 7;
+  // Present only when the vendor publishes correction grids; usually absent.
+  bool has_phase_center_variation_corrections = 8;
+  bool has_signal_gain_corrections = 9;
+}
+
 message VideoCaptureData {
   google.protobuf.Timestamp time = 1;
   CameraInfo camera_meta = 2;
@@ -371,6 +453,8 @@ message VideoCaptureData {
   repeated LightData light = 12;
   repeated GnssMeasurementData gnss_measurement = 13;
   repeated GnssStatusData gnss_status = 14;
+  repeated GnssNavigationMessageData gnss_navigation = 15;
+  repeated GnssAntennaInfoData gnss_antenna = 16;
 }
 
 message MessageWrapper {
@@ -389,5 +473,7 @@ message MessageWrapper {
     LightData light_data = 12;
     GnssMeasurementData gnss_measurement_data = 13;
     GnssStatusData gnss_status_data = 14;
+    GnssNavigationMessageData gnss_navigation_data = 15;
+    GnssAntennaInfoData gnss_antenna_data = 16;
   }
 }

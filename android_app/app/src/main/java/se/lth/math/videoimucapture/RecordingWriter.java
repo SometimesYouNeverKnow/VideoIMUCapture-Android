@@ -25,6 +25,8 @@ import se.lth.math.videoimucapture.RecordingProtos.ThermalData;
 import se.lth.math.videoimucapture.RecordingProtos.LightData;
 import se.lth.math.videoimucapture.RecordingProtos.GnssMeasurementData;
 import se.lth.math.videoimucapture.RecordingProtos.GnssStatusData;
+import se.lth.math.videoimucapture.RecordingProtos.GnssNavigationMessageData;
+import se.lth.math.videoimucapture.RecordingProtos.GnssAntennaInfoData;
 import se.lth.math.videoimucapture.RecordingProtos.MessageWrapper;
 
 import static java.lang.Math.abs;
@@ -219,6 +221,16 @@ public class RecordingWriter implements Runnable{
                 VideoCaptureData.newBuilder().addGnssStatus(msg.getGnssStatusData())
                         .build().writeTo(mFileStream);
                 break;
+            case GNSS_NAVIGATION_DATA:
+                if (VERBOSE) Log.d(TAG,"Got GNSS navigation message");
+                VideoCaptureData.newBuilder().addGnssNavigation(msg.getGnssNavigationData())
+                        .build().writeTo(mFileStream);
+                break;
+            case GNSS_ANTENNA_DATA:
+                if (VERBOSE) Log.d(TAG,"Got GNSS antenna info");
+                VideoCaptureData.newBuilder().addGnssAntenna(msg.getGnssAntennaData())
+                        .build().writeTo(mFileStream);
+                break;
         }
     }
 
@@ -326,6 +338,12 @@ public class RecordingWriter implements Runnable{
     }
     public void queueData(GnssStatusData msg) {
         queueData(MessageWrapper.newBuilder().setGnssStatusData(msg).build());
+    }
+    public void queueData(GnssNavigationMessageData msg) {
+        queueData(MessageWrapper.newBuilder().setGnssNavigationData(msg).build());
+    }
+    public void queueData(GnssAntennaInfoData msg) {
+        queueData(MessageWrapper.newBuilder().setGnssAntennaData(msg).build());
     }
 
 }

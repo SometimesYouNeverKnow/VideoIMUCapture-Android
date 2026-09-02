@@ -5,7 +5,9 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.location.GnssClock;
 import android.location.GnssMeasurement;
+import android.location.GnssAntennaInfo;
 import android.location.GnssMeasurementsEvent;
+import android.location.GnssNavigationMessage;
 import android.location.GnssStatus;
 import android.location.Location;
 import android.location.LocationListener;
@@ -16,6 +18,10 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
+
+import com.google.protobuf.ByteString;
+
+import java.util.List;
 
 import androidx.core.content.ContextCompat;
 
@@ -42,6 +48,7 @@ public class GnssLogger implements LocationListener {
     private final Handler mMainHandler = new Handler(Looper.getMainLooper());
     private GnssMeasurementsEvent.Callback mMeasCallback;
     private GnssStatus.Callback mStatusCallback;
+    private GnssNavigationMessage.Callback mNavCallback;
 
     public GnssLogger(Context context) {
         mLocationManager = (LocationManager) context.getSystemService(Context.LOCATION_SERVICE);
@@ -96,6 +103,26 @@ public class GnssLogger implements LocationListener {
                 }
             };
             mLocationManager.registerGnssStatusCallback(mStatusCallback, mMainHandler);
+
+            // Broadcast ephemeris. Pseudoranges say how far each satellite was; they do not
+            // say where it WAS. Without the orbits a measurement file is a set of distances to
+            // unknown points, and recording the subframes here means the clip carries its own
+            // orbits rather than depending on an archive still serving that day years from now.
+            mNavCallback = new GnssNavigationMessage.Callback() {
+                @Override
+                public void onGnssNavigationMessageReceived(GnssNavigationMessage message) {
+                    onNavigationMessage(message);
+                }
+            };
+            // The register call returns whether the device will supply them at all. Without
+            // checking it, "no navigation messages in the file" has two very different causes
+            // -- the device refused, or it agreed and the sky was too poor to decode a
+            // subframe -- and the file cannot tell them apart.
+            boolean nav = mLocationManager.registerGnssNavigationMessageCallback(
+                    mNavCallback, mMainHandler);
+            Log.i(TAG, nav
+                    ? "GNSS navigation messages: device accepted the callback."
+                    : "GNSS navigation messages: DEVICE REFUSED — no ephemeris will be recorded.");
         } catch (RuntimeException e) {
             // SecurityException is a RuntimeException; catch the wider type once.
             Log.w(TAG, "Raw GNSS callbacks unavailable: " + e);
@@ -112,6 +139,10 @@ public class GnssLogger implements LocationListener {
             if (mStatusCallback != null) {
                 mLocationManager.unregisterGnssStatusCallback(mStatusCallback);
                 mStatusCallback = null;
+            }
+            if (mNavCallback != null) {
+                mLocationManager.unregisterGnssNavigationMessageCallback(mNavCallback);
+                mNavCallback = null;
             }
             mRegistered = false;
         }
@@ -135,6 +166,34 @@ public class GnssLogger implements LocationListener {
         if (clock.hasDriftNanosPerSecond()) {
             b.setDriftNsps(clock.getDriftNanosPerSecond());
         }
+        // The rest of the clock. hardware_clock_discontinuity_count is the one that makes the
+        // difference between a measurement file and a post-processable one: the receiver clock
+        // can jump, and a jump restarts the carrier-phase count. A solver that cannot see the
+        // jump carries the break into the position.
+        if (Build.VERSION.SDK_INT >= 29 && clock.hasElapsedRealtimeNanos()) {
+            b.setElapsedRealtimeNs(clock.getElapsedRealtimeNanos());
+            if (clock.hasElapsedRealtimeUncertaintyNanos()) {
+                b.setElapsedRealtimeUncertaintyNs(clock.getElapsedRealtimeUncertaintyNanos());
+            }
+        } else {
+            // Older devices do not put the sensor clock on the GnssClock. Reading it here is
+            // late by the callback's own latency, but a joinable-with-a-caveat timestamp beats
+            // an epoch that cannot be lined up with a video frame at all.
+            b.setElapsedRealtimeNs(SystemClock.elapsedRealtimeNanos());
+        }
+        b.setHardwareClockDiscontinuityCount(clock.getHardwareClockDiscontinuityCount());
+        if (clock.hasLeapSecond()) {
+            b.setLeapSecond(clock.getLeapSecond());
+        }
+        if (clock.hasTimeUncertaintyNanos()) {
+            b.setTimeUncertaintyNs(clock.getTimeUncertaintyNanos());
+        }
+        if (clock.hasBiasUncertaintyNanos()) {
+            b.setBiasUncertaintyNs(clock.getBiasUncertaintyNanos());
+        }
+        if (clock.hasDriftUncertaintyNanosPerSecond()) {
+            b.setDriftUncertaintyNsps(clock.getDriftUncertaintyNanosPerSecond());
+        }
         for (GnssMeasurement m : event.getMeasurements()) {
             RecordingProtos.GnssMeasurementData.Measurement.Builder mb =
                     RecordingProtos.GnssMeasurementData.Measurement.newBuilder()
@@ -152,9 +211,106 @@ public class GnssLogger implements LocationListener {
             if (Build.VERSION.SDK_INT >= 26 && m.hasCarrierFrequencyHz()) {
                 mb.setCarrierFrequencyHz(m.getCarrierFrequencyHz());
             }
+            // Every measurement in an epoch is taken at a slightly different instant, and this
+            // is that offset. RINEX observations are (clock time + this); without it every
+            // satellite in the epoch is placed at the same moment, which is wrong by enough to
+            // matter at the decimetre level these measurements exist to reach.
+            mb.setTimeOffsetNs(m.getTimeOffsetNanos());
+            mb.setReceivedSvTimeUncertaintyNs(m.getReceivedSvTimeUncertaintyNanos());
+            mb.setAccumulatedDeltaRangeUncertaintyM(
+                    m.getAccumulatedDeltaRangeUncertaintyMeters());
+            if (Build.VERSION.SDK_INT >= 29 && m.hasCodeType()) {
+                // RINEX 3 names an observation by band AND code; without this the writer has
+                // to guess which signal was tracked.
+                mb.setCodeType(m.getCodeType());
+            }
+            if (Build.VERSION.SDK_INT >= 30) {
+                if (m.hasBasebandCn0DbHz()) {
+                    mb.setBasebandCn0Dbhz(m.getBasebandCn0DbHz());
+                }
+                // Inter-signal biases: the hardware delay between this signal and the reference
+                // one. Combine constellations, or L1 with L5, without removing these and a
+                // metres-level offset remains that looks exactly like a position error.
+                if (m.hasFullInterSignalBiasNanos()) {
+                    mb.setFullInterSignalBiasNs(m.getFullInterSignalBiasNanos());
+                }
+                if (m.hasFullInterSignalBiasUncertaintyNanos()) {
+                    mb.setFullInterSignalBiasUncertaintyNs(
+                            m.getFullInterSignalBiasUncertaintyNanos());
+                }
+                if (m.hasSatelliteInterSignalBiasNanos()) {
+                    mb.setSatelliteInterSignalBiasNs(m.getSatelliteInterSignalBiasNanos());
+                }
+                if (m.hasSatelliteInterSignalBiasUncertaintyNanos()) {
+                    mb.setSatelliteInterSignalBiasUncertaintyNs(
+                            m.getSatelliteInterSignalBiasUncertaintyNanos());
+                }
+            }
             b.addMeasurements(mb);
         }
         writer.queueData(b.build());
+    }
+
+    private void onNavigationMessage(GnssNavigationMessage message) {
+        RecordingWriter writer = mRecordingWriter;
+        if (writer == null || !writer.isRecording()) {
+            return;
+        }
+        RecordingProtos.GnssNavigationMessageData.Builder b =
+                RecordingProtos.GnssNavigationMessageData.newBuilder()
+                        .setTimeNs(SystemClock.elapsedRealtimeNanos())
+                        .setSvid(message.getSvid())
+                        .setType(message.getType())
+                        .setStatus(message.getStatus())
+                        .setMessageId(message.getMessageId())
+                        .setSubmessageId(message.getSubmessageId());
+        byte[] data = message.getData();
+        if (data != null) {
+            b.setData(ByteString.copyFrom(data));
+        }
+        writer.queueData(b.build());
+    }
+
+    /**
+     * Antenna geometry, written once at the start of a recording.
+     *
+     * Device-static, so it does not belong in the per-epoch stream — but it does belong in the
+     * file. A position from these measurements is the position of the antenna PHASE CENTRE,
+     * which is not where the phone is and is not the same place at L1 as at L5. At metres
+     * nobody cares; at the decimetres this stream exists to reach, a few unmodelled centimetres
+     * is a real part of the error budget, and a fixed knowable offset is the easiest kind of
+     * error to stop making.
+     */
+    public void writeAntennaInfo() {
+        RecordingWriter writer = mRecordingWriter;
+        if (writer == null || mLocationManager == null || Build.VERSION.SDK_INT < 30) {
+            return;
+        }
+        try {
+            List<GnssAntennaInfo> infos = mLocationManager.getGnssAntennaInfos();
+            if (infos == null || infos.isEmpty()) {
+                Log.i(TAG, "Device publishes no GNSS antenna info.");
+                return;
+            }
+            for (GnssAntennaInfo a : infos) {
+                GnssAntennaInfo.PhaseCenterOffset o = a.getPhaseCenterOffset();
+                writer.queueData(RecordingProtos.GnssAntennaInfoData.newBuilder()
+                        .setCarrierFrequencyMhz(a.getCarrierFrequencyMHz())
+                        .setPhaseCenterOffsetXMm(o.getXOffsetMm())
+                        .setPhaseCenterOffsetYMm(o.getYOffsetMm())
+                        .setPhaseCenterOffsetZMm(o.getZOffsetMm())
+                        .setPhaseCenterOffsetXUncertaintyMm(o.getXOffsetUncertaintyMm())
+                        .setPhaseCenterOffsetYUncertaintyMm(o.getYOffsetUncertaintyMm())
+                        .setPhaseCenterOffsetZUncertaintyMm(o.getZOffsetUncertaintyMm())
+                        .setHasPhaseCenterVariationCorrections(
+                                a.getPhaseCenterVariationCorrections() != null)
+                        .setHasSignalGainCorrections(a.getSignalGainCorrections() != null)
+                        .build());
+            }
+            Log.i(TAG, "Wrote GNSS antenna info for " + infos.size() + " frequencies.");
+        } catch (RuntimeException e) {
+            Log.w(TAG, "GNSS antenna info unavailable: " + e);
+        }
     }
 
     private void onSatelliteStatus(GnssStatus status) {
@@ -192,6 +348,8 @@ public class GnssLogger implements LocationListener {
 
     public void startRecording(RecordingWriter recordingWriter) {
         mRecordingWriter = recordingWriter;
+        // Device-static, so once per clip, at the top of the file.
+        writeAntennaInfo();
     }
 
     public void stopRecording() {
