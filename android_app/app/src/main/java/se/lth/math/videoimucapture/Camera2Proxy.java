@@ -343,7 +343,20 @@ public class Camera2Proxy {
     public void startRecordingCaptureResult(RecordingWriter recordingWriter) {
         mRecordingWriter = recordingWriter;
         mRecordingMetadata = true;
-        setAutoAlgorithmLock(true);
+        // NO unconditional lock here. This used to call setAutoAlgorithmLock(true) outright --
+        // upstream's behaviour, from before the choice existed -- which silently overruled the
+        // "Freeze exposure while recording" setting v0.14 added. CaptureModeManager reads the
+        // preference and locks or does not; four milliseconds later this line locked anyway.
+        //
+        // The log said both things in sequence and neither of us read it:
+        //     CaptureMode: video session radiometry floating
+        //     Camera2Proxy: AE/AWB lock engaged
+        //
+        // So every clip this fork has ever recorded carried ONE radiometry, whatever the
+        // setting said, and the blur budget could never work at all -- it caps exposure through
+        // the AE target-FPS range, and AE was not listening. Measured on a 51.6 s overcast walk:
+        // exposure frozen at 16.67 ms and ISO at 16 for all 1547 frames, AE_STATE LOCKED on
+        // 1540 of them. CaptureModeManager owns this decision now, in both directions.
         writeCameraInfo();
     }
 

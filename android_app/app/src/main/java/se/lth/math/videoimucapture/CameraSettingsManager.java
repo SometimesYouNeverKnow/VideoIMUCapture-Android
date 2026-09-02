@@ -731,9 +731,17 @@ class CameraSettingExposureMode extends CameraSetting {
             case TOUCH_AUTO:
                 builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON);
                 builder.set(CaptureRequest.CONTROL_AE_LOCK, true);
+                break;
             case CONTINUOUS_AUTO:
                 builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON);
                 builder.set(CaptureRequest.CONTROL_AE_REGIONS, null);
+                // Say the quiet part. A CaptureRequest.Builder is long-lived and remembers
+                // every key ever set on it, so "continuous auto" that never clears AE_LOCK
+                // inherits a lock set by a stills burst, a touch-to-expose, or the TOUCH_AUTO
+                // branch above -- which used to fall straight through into this one for want
+                // of a break. Continuous means continuous.
+                builder.set(CaptureRequest.CONTROL_AE_LOCK, false);
+                break;
         }
     }
 }
