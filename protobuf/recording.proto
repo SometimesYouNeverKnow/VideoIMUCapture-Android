@@ -136,6 +136,12 @@ message VideoFrameMetaData {
   // advertised" and "not supported" are different claims, and the request is made anyway (#44).
   // This field is how the difference becomes visible instead of assumed.
   optional int32 ois_data_mode = 29;                    // 0 OFF, 1 ON
+  // CONTROL_AE_EXPOSURE_COMPENSATION in device units, as applied to THIS frame (#28). The
+  // operator can now step exposure mid-recording without ending the session, so a clip may
+  // carry more than one; without this field that step is an unexplained brightness jump, and
+  // with it a bake can undo exactly what the operator asked for. `optional` because 0 -- no
+  // compensation -- is the value most frames will honestly have.
+  optional int32 ae_exposure_compensation = 30;
 }
 
 // Barometer sample. time_ns is the sensor event timestamp, same clock as IMUData.time_ns.

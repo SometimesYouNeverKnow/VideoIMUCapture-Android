@@ -126,6 +126,12 @@
             app:defaultValue="3"
             app:summary="Target maximum motion smear per frame, pixels. The AE cap aims at this."/>
 
+        <SwitchPreferenceCompat
+            app:key="blur_budget_manual"
+            app:title="Manual shutter for the budget (experimental)"
+            app:defaultValue="false"
+            app:summary="When the budget needs a shutter shorter than 1/30 s — which is anything above a slow walk — take auto exposure off and set the shutter directly, raising ISO to match. This is the only setting on this phone that can actually meet the budget while walking; the AE cap alone stops at 1/30 s. It hands exposure back the moment you slow down. Costs noise, which the per-frame noise profile can model; blur cannot be modelled away."/>
+
         <SeekBarPreference
             app:key="hold_still_px"
             app:title="Hold-still alarm (pixels)"

@@ -57,6 +57,10 @@ public class Camera2Proxy {
     private StillCaptureManager mStillCaptureManager;
     // Most recent metered result, used as the base exposure a bracket steps away from.
     private volatile TotalCaptureResult mLastResult;
+    // True while the shutter is held off auto exposure by the blur budget (#38).
+    private volatile boolean mManualExposureHeld = false;
+    // Live exposure compensation in device units, adjustable mid-recording (#28).
+    private volatile int mExposureCompensation = 0;
     private volatile boolean mTorchOn = false;
     private CaptureRequest.Builder mPreviewRequestBuilder;
     private Rect sensorArraySize;
@@ -432,6 +436,143 @@ public class Camera2Proxy {
     // (exposure <= 1 / lowerFps). Everything here is a no-op unless the controller is enabled.
 
     /** The device's available AE target FPS ranges, or an empty array. */
+    /** Most recent metered ISO, or 0. Paired with getLastExposureNs() it is the exposure value
+     *  the AE had settled on, which is what a manual override has to preserve. */
+    public int getLastIso() {
+        if (mLastResult != null) {
+            Integer s = mLastResult.get(CaptureResult.SENSOR_SENSITIVITY);
+            if (s != null) {
+                return s;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Nudge exposure compensation by `steps` device units and return the new value in STOPS
+     * (ReconStab #28).
+     *
+     * The complaint this answers: there was no way to change exposure without ending the
+     * session, and ending the session is not free -- it restarts frame numbering, breaks the
+     * clip in two and costs the walk its continuity. This applies to the repeating request in
+     * place, so a walk that goes from shade into sun is one recording with a step in it, and
+     * the step is recorded per frame (ae_exposure_compensation) so a bake can undo it.
+     *
+     * Returns Float.NaN when the device declines to be compensated -- AE off, or no range.
+     */
+    public float nudgeExposureCompensation(int steps) {
+        if (mCaptureSession == null || mPreviewRequestBuilder == null
+                || mCameraCharacteristics == null) {
+            return Float.NaN;
+        }
+        Range<Integer> range =
+                mCameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
+        android.util.Rational step =
+                mCameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP);
+        if (range == null || step == null || range.getUpper() == range.getLower()) {
+            return Float.NaN;
+        }
+        int units = range.clamp(mExposureCompensation + steps);
+        if (units == mExposureCompensation) {
+            return units * step.floatValue();   // already at the rail; report, do not re-issue
+        }
+        try {
+            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, units);
+            mCaptureSession.setRepeatingRequest(
+                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+            mExposureCompensation = units;
+        } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
+            Log.w(TAG, "Could not set exposure compensation: " + e);
+            return Float.NaN;
+        }
+        return units * step.floatValue();
+    }
+
+    /** Current exposure compensation in stops. */
+    public float getExposureCompensationStops() {
+        android.util.Rational step = mCameraCharacteristics != null
+                ? mCameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
+                : null;
+        return step == null ? 0f : mExposureCompensation * step.floatValue();
+    }
+
+    /** The device's own shutter limits, ns, or null if it does not say. */
+    public Range<Long> getExposureTimeRange() {
+        return mCameraCharacteristics != null
+                ? mCameraCharacteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
+                : null;
+    }
+
+    /** The device's own ISO limits, or null. */
+    public Range<Integer> getSensitivityRange() {
+        return mCameraCharacteristics != null
+                ? mCameraCharacteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
+                : null;
+    }
+
+    /**
+     * Take the shutter off auto exposure and hold it at exposureNs, spending iso to compensate
+     * (ReconStab #38, the manual half).
+     *
+     * This is the only lever on this device that can meet a blur budget while walking: the AE
+     * target-FPS-range path bottoms out at 1/30 s, and a 3 px budget at 2777 px focal and a
+     * walking 0.263 rad/s needs 1/243 s. It is also the dangerous one, which is why it is
+     * opt-in, released the moment the motion stops, and bounded here rather than by the caller:
+     *
+     *  - the frame duration is pinned to the encoder's rate, so the camera cannot outrun the
+     *    encoder the way a [60,60] AE range did on 2026-09-02 and kill the recording;
+     *  - exposure and ISO are both clamped to the device's declared ranges;
+     *  - AE_MODE goes OFF only for as long as a cap is in force, and clearManualExposure()
+     *    puts it back.
+     */
+    public void setManualExposure(long exposureNs, int iso) {
+        if (mCaptureSession == null || mPreviewRequestBuilder == null) {
+            return;
+        }
+        Range<Long> expRange = getExposureTimeRange();
+        if (expRange != null) {
+            exposureNs = Math.max(expRange.getLower(), Math.min(expRange.getUpper(), exposureNs));
+        }
+        Range<Integer> isoRange = getSensitivityRange();
+        if (isoRange != null) {
+            iso = Math.max(isoRange.getLower(), Math.min(isoRange.getUpper(), iso));
+        }
+        long frameDurationNs = 1000000000L / VideoEncoderCore.FRAME_RATE;
+        try {
+            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE,
+                    CameraMetadata.CONTROL_AE_MODE_OFF);
+            mPreviewRequestBuilder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs);
+            mPreviewRequestBuilder.set(CaptureRequest.SENSOR_SENSITIVITY, iso);
+            mPreviewRequestBuilder.set(CaptureRequest.SENSOR_FRAME_DURATION, frameDurationNs);
+            mCaptureSession.setRepeatingRequest(
+                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+            mManualExposureHeld = true;
+        } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
+            Log.w(TAG, "Could not set manual exposure: " + e);
+        }
+    }
+
+    /** Hand the shutter back to auto exposure. Safe to call when nothing is held. */
+    public void clearManualExposure() {
+        if (!mManualExposureHeld || mCaptureSession == null || mPreviewRequestBuilder == null) {
+            return;
+        }
+        try {
+            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE,
+                    CameraMetadata.CONTROL_AE_MODE_ON);
+            mPreviewRequestBuilder.set(CaptureRequest.SENSOR_FRAME_DURATION, null);
+            mCaptureSession.setRepeatingRequest(
+                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+        } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
+            Log.w(TAG, "Could not release manual exposure: " + e);
+        }
+        mManualExposureHeld = false;
+    }
+
+    public boolean isManualExposureHeld() {
+        return mManualExposureHeld;
+    }
+
     public Range<Integer>[] getAvailableFpsRanges() {
         Range<Integer>[] r = mCameraCharacteristics != null
                 ? mCameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
@@ -497,12 +638,11 @@ public class Camera2Proxy {
         if (trigger == null) {
             return;
         }
-        float focalPx = 0f;
-        float[] intrinsics = mCameraCharacteristics.get(
-                CameraCharacteristics.LENS_INTRINSIC_CALIBRATION);
-        if (intrinsics != null && intrinsics.length >= 1 && intrinsics[0] > 0) {
-            focalPx = intrinsics[0];
-        } else {
+        // One source for focal pixels, not three. This used to read the STATIC characteristic
+        // while the blur budget read the per-frame result and the on-screen readout read the
+        // derived helper -- three numbers for one quantity, and they disagreed by up to 1.66x.
+        float focalPx = getFocalPixels();
+        if (focalPx <= 0f) {
             Rect active = mCameraCharacteristics.get(
                     CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
             android.util.SizeF physical = mCameraCharacteristics.get(
@@ -812,10 +952,17 @@ public class Camera2Proxy {
                     Float focal_length_pix = mFocalLengthHelper.getFocalLengthPixel();
 
                     if (mRecordingMetadata) {
+                        // est_focal_length_pix keeps the DERIVED estimate: the field is named
+                        // "est" and the HAL's own value has its own field
+                        // (lens_intrinsic_calibration), so both provenances survive in the file.
                         writeCaptureData(result, focal_length_pix);
                     }
+                    // The readout shows the number the app actually computes smear from -- the
+                    // HAL's per-frame fx where it exists. Showing the derived estimate instead
+                    // put 4406 px on screen against a recorded 2884, and a readout that
+                    // disagrees with the file teaches the operator to distrust the file.
                     ((CameraCaptureActivity) mActivity).getmCameraCaptureFragment()
-                            .updateCaptureResultPanel(focal_length_pix, exposureTimeNs);
+                            .updateCaptureResultPanel(getFocalPixels(), exposureTimeNs);
                 }
 
                 @Override
@@ -1106,6 +1253,10 @@ public class Camera2Proxy {
             if (oisDataMode != null) {
                 b.setOisDataMode(oisDataMode);
             }
+        }
+        Integer ev = result.get(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION);
+        if (ev != null) {
+            b.setAeExposureCompensation(ev);
         }
         android.util.Pair<Double, Double>[] noise = result.get(CaptureResult.SENSOR_NOISE_PROFILE);
         if (noise != null) {

@@ -133,6 +133,8 @@ public class CameraCaptureActivity extends AppCompatActivity {
     private static IMUManager mImuManager;
     private static GnssLogger mGnssLogger;
     private static ThermalLogger mThermalLogger;
+    // Whether the last volume-key press was used for exposure compensation (#28).
+    private boolean mVolumeKeysConsumed = false;
     private static RecordingWriter sRecordingWriter = new RecordingWriter();
     private CaptureModeManager mCaptureModeManager;
 
@@ -165,6 +167,51 @@ public class CameraCaptureActivity extends AppCompatActivity {
     }
     public Camera2Proxy getmCamera2Proxy() {
         return mCamera2Proxy;
+    }
+
+    /**
+     * The volume keys step exposure compensation, during a recording, without ending it (#28).
+     *
+     * A hardware key rather than an on-screen control on purpose: the moment this is for is
+     * walking into sun with the phone held out, and that is exactly the moment the operator
+     * cannot look at the screen or find a slider. Each press is one device unit; the applied
+     * value shows in the readout as EV and is recorded on every frame, so the step is legible
+     * afterwards rather than being an unexplained jump in brightness.
+     *
+     * The keys keep their normal meaning when there is no camera to compensate.
+     */
+    @Override
+    public boolean onKeyDown(int keyCode, android.view.KeyEvent event) {
+        int steps = 0;
+        if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) {
+            steps = 1;
+        } else if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN) {
+            steps = -1;
+        }
+        if (steps != 0 && mCamera2Proxy != null) {
+            float stops = mCamera2Proxy.nudgeExposureCompensation(steps);
+            if (!Float.isNaN(stops)) {
+                Log.i(TAG, String.format(java.util.Locale.US,
+                        "exposure compensation now %+.2f stops", stops));
+                mVolumeKeysConsumed = true;
+                return true;   // swallow it: no volume change, no system slider over the preview
+            }
+        }
+        mVolumeKeysConsumed = false;
+        return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, android.view.KeyEvent event) {
+        // Swallow the matching UP too, or the system still shows its volume panel on release.
+        // Only when the DOWN was actually used for exposure: on a device that declines to be
+        // compensated the keys must keep changing the volume, not do nothing at all.
+        if ((keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP
+                || keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN)
+                && mVolumeKeysConsumed) {
+            return true;
+        }
+        return super.onKeyUp(keyCode, event);
     }
 
     @Override

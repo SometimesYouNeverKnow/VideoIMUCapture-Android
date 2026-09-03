@@ -542,7 +542,8 @@ public class CameraCaptureFragment extends Fragment
                         });
             }
             mBlurBudget.start(prefs.getInt("blur_budget_px", 3),
-                    prefs.getInt("hold_still_px", 40));
+                    prefs.getInt("hold_still_px", 40),
+                    prefs.getBoolean("blur_budget_manual", false));
         }
 
         mGLView.queueEvent(new Runnable() {
@@ -621,7 +622,17 @@ public class CameraCaptureFragment extends Fragment
         final String hold = (mHoldStill && mRecordingEnabled) ? "HOLD STILL|" : "";
         final String smear = (mSmearPx >= 0f && mRecordingEnabled)
                 ? String.format(Locale.getDefault(), "SMEAR %.0fpx|", mSmearPx) : "";
-        final String line = "|" + hold + smear + clock + sfl + "|" + sexpotime + "|" + imuHz + "|" + heat;
+        // Exposure compensation, but only when the operator has actually moved it (#28). At 0 it
+        // is noise on a line that is already dense; away from 0 it is the reason the frames look
+        // the way they do, and it must be visible without opening settings.
+        String ev = "";
+        if (act != null && act.getmCamera2Proxy() != null) {
+            float stops = act.getmCamera2Proxy().getExposureCompensationStops();
+            if (Math.abs(stops) > 0.01f) {
+                ev = String.format(Locale.getDefault(), "EV %+.1f|", stops);
+            }
+        }
+        final String line = "|" + hold + smear + clock + ev + sfl + "|" + sexpotime + "|" + imuHz + "|" + heat;
 
         getActivity().runOnUiThread(() -> {
             if (mCaptureResultText != null) {

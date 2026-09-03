@@ -69,6 +69,11 @@ public class BlurBudgetController {
     private volatile boolean mRunning = false;
     private float mGyroEma = 0f;
     private Range<Integer> mApplied = null;
+    // The manual-shutter half (#38): opt-in on top of the budget itself, because it takes AE
+    // off and a mistake here is a black clip rather than a blurred one.
+    private boolean mManualEnabled = false;
+    private long mHeldNs = 0;
+    private int mManualIso = 0;
 
     private final Runnable mTick = new Runnable() {
         @Override
@@ -92,23 +97,34 @@ public class BlurBudgetController {
     }
 
     public void start(float budgetPx, float holdStillPx) {
+        start(budgetPx, holdStillPx, false);
+    }
+
+    public void start(float budgetPx, float holdStillPx, boolean manualShutter) {
         mBudgetPx = budgetPx > 0 ? budgetPx : 3f;
         mHoldStillPx = holdStillPx > 0 ? holdStillPx : 40f;
+        mManualEnabled = manualShutter;
         mGyroEma = mImu != null ? mImu.getLatestGyroMagnitude() : 0f;
         mRunning = true;
         mHandler.removeCallbacks(mTick);
         mHandler.post(mTick);
         Log.i(TAG, "blur budget on, " + mBudgetPx + " px; hold-still alarm at "
-                + mHoldStillPx + " px");
+                + mHoldStillPx + " px; manual shutter " + (mManualEnabled ? "ON" : "off"));
     }
 
     public void stop() {
         mRunning = false;
         mHandler.removeCallbacks(mTick);
-        // Release the cap: hand the AE its full range back.
-        if (mApplied != null && mProxy != null) {
-            mProxy.setAeTargetFpsRange(null);
-            mApplied = null;
+        // Release the cap: hand the AE its full range back, and the shutter with it. Both, and
+        // in this order -- a manual hold left behind outlives the recording that justified it.
+        if (mProxy != null) {
+            if (mApplied != null) {
+                mProxy.setAeTargetFpsRange(null);
+                mApplied = null;
+            }
+            mProxy.clearManualExposure();
+            mHeldNs = 0;
+            mManualIso = 0;
         }
         Log.i(TAG, "blur budget off");
     }
@@ -136,6 +152,8 @@ public class BlurBudgetController {
             mApplied = best;
         }
 
+        applyManualCap(maxExposureS, metered);
+
         // The cue used to be `best == null` -- "no available FPS range meets the budget".
         // That is a statement about the DEVICE, not the operator, and on this hardware it is
         // almost always true: at 30 fps the shortest exposure the AE range can force is
@@ -152,6 +170,53 @@ public class BlurBudgetController {
         if (mListener != null) {
             mListener.onBlurBudgetState(holdStill, smearPx, capExposureNs);
         }
+    }
+
+    /**
+     * The manual half of #38: hold SENSOR_EXPOSURE_TIME below the budget and spend ISO for it.
+     *
+     * The AE-range path above cannot go shorter than 1/CAPTURE_FPS, and the measured walk needed
+     * 1/243 s. So when — and only when — the budget asks for something shorter than the range
+     * path can deliver, this takes AE off and sets the shutter directly, raising ISO by the same
+     * factor so the frame keeps its exposure value. The trade is explicit: blur is unrecoverable,
+     * noise is a known quantity with a per-frame noise_profile in the file to model it.
+     *
+     * It releases the moment the motion no longer needs it, so a walk that stops for a photograph
+     * gets its auto exposure back rather than staying pinned at ISO 3200. Off by default.
+     */
+    private void applyManualCap(float maxExposureS, long meteredNs) {
+        if (!mManualEnabled) {
+            return;
+        }
+        long rangeFloorNs = 1000000000L / CAPTURE_FPS;   // the shortest the AE-range path can force
+        long wantNs = (long) (maxExposureS * 1e9f);
+        if (wantNs >= rangeFloorNs) {
+            // The range path can do this on its own; a manual hold would buy nothing and would
+            // cost the AE its judgement about everything else in the scene.
+            if (mProxy.isManualExposureHeld()) {
+                Log.i(TAG, "manual shutter released; budget reachable by AE again");
+                mProxy.clearManualExposure();
+                mManualIso = 0;
+            }
+            return;
+        }
+        // Preserve exposure value: halving the shutter doubles the ISO. Base it on the last
+        // METERED pair, which is the AE's own answer for this light, not on a guess.
+        int meteredIso = mProxy.getLastIso();
+        if (meteredIso <= 0 || meteredNs <= 0) {
+            return;   // no metering to scale from yet
+        }
+        long baseNs = mProxy.isManualExposureHeld() && mManualIso > 0 ? mHeldNs : meteredNs;
+        int baseIso = mProxy.isManualExposureHeld() && mManualIso > 0 ? mManualIso : meteredIso;
+        double scale = (double) baseNs / (double) wantNs;
+        int iso = (int) Math.round(baseIso * scale);
+        // Do not re-issue a repeating request for a change the sensor cannot even express.
+        if (mProxy.isManualExposureHeld() && Math.abs(wantNs - mHeldNs) < mHeldNs / 8) {
+            return;
+        }
+        mProxy.setManualExposure(wantNs, iso);
+        mHeldNs = wantNs;
+        mManualIso = iso;
     }
 
     /**

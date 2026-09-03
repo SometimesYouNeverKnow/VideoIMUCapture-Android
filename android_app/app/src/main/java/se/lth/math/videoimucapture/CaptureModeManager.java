@@ -215,6 +215,12 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // at trigger time be graded against the blur actually achieved at each shutter.
         mActivity.getmImuManager().startRecording(mWriter);
         mActivity.getmGnssLogger().startRecording(mWriter);
+        // Thermal too. Only the video path started this, so every stills run this fork has
+        // recorded has an empty thermal column -- including the 20 s WALK run on 2026-09-03,
+        // graded ABSENT. A stills WALK is hundreds of full-resolution shots and RAW writes,
+        // which is the hottest thing this app does; if throttling is going to change what the
+        // sensor delivers, this is the run where it happens.
+        mActivity.getmThermalLogger().startRecording(mWriter);
 
         // Lock the auto algorithms for the whole run so every frame shares one
         // radiometry; a drifting AE would make the splat explain brightness as content.
@@ -263,6 +269,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         mMain.postDelayed(() -> {
             mActivity.getmImuManager().stopRecording();
             mActivity.getmGnssLogger().stopRecording();
+            mActivity.getmThermalLogger().stopRecording();
             if (owns && writer != null) {
                 writer.stopRecording();
             }
@@ -337,6 +344,9 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
         // beside a walk cannot be tied to it without a shared clock carrying shared motion.
         mActivity.getmImuManager().startRecording(writer);
         mActivity.getmGnssLogger().startRecording(writer);
+        // ...and thermal, for the same reason and with the same history: an OBJECT composite is
+        // a focus stack plus brackets plus a stereo pair, minutes of full-resolution work.
+        mActivity.getmThermalLogger().startRecording(writer);
         proxy.lockAutoAlgorithms(true);
         StillCaptureManager scm = proxy.getStillCaptureManager();
         if (scm != null) {
@@ -387,6 +397,7 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             if (ownsWriter) {
                 mActivity.getmImuManager().stopRecording();
                 mActivity.getmGnssLogger().stopRecording();
+                mActivity.getmThermalLogger().stopRecording();
                 writer.stopRecording();
             }
             notifyState(false, hasStereo ? "OBJECT complete + stereo" : "OBJECT complete");
