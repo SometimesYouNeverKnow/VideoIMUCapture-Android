@@ -286,6 +286,28 @@ public class BlurBudgetController {
             }
             return;
         }
+        // THE ISO CEILING, which is what makes this safe rather than merely short (#38's other
+        // unfinished half). The budget asks for an exposure; the sensor can only pay for it up to
+        // its maximum sensitivity. Beyond that point a shorter shutter does not buy a sharper
+        // frame -- it buys a DARKER one, and darkness is the failure that cannot be undone later.
+        // So the shortest exposure allowed is the one the ISO ceiling can still hold the AE's own
+        // exposure value at, and the budget degrades to "as sharp as this sensor can afford"
+        // instead of quietly underexposing. Correcting the focal length on 2026-09-03 made this
+        // load-bearing: at the true 4629 px the same room asks for 1/300 s, past what ISO can pay.
+        Range<Integer> isoRange = mProxy.getSensitivityRange();
+        if (isoRange != null && isoRange.getUpper() > 0) {
+            long affordableNs = (long) (mAeTargetLight / isoRange.getUpper());
+            if (wantNs < affordableNs) {
+                wantNs = affordableNs;
+                if (wantNs >= rangeFloorNs) {
+                    // The ceiling puts the answer back where auto exposure already had it.
+                    if (held) {
+                        releaseToAe();
+                    }
+                    return;
+                }
+            }
+        }
         int iso = (int) Math.round(mAeTargetLight / (double) wantNs);
         // Do not re-issue a repeating request for a change the sensor cannot even express.
         if (held && Math.abs(wantNs - mHeldNs) < mHeldNs / 8) {

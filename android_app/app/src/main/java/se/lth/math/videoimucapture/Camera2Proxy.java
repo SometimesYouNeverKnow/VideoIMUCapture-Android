@@ -641,11 +641,43 @@ public class Camera2Proxy {
         if (mLastResult != null) {
             float[] k = mLastResult.get(CaptureResult.LENS_INTRINSIC_CALIBRATION);
             if (k != null && k.length >= 1 && k[0] > 0f) {
-                return k[0];
+                return k[0] * cropMagnification();
             }
         }
         Float f = mFocalLengthHelper.getFocalLengthPixel();
         return f != null ? f : 0f;
+    }
+
+    /**
+     * How much bigger a recorded pixel is than an active-array pixel.
+     *
+     * LENS_INTRINSIC_CALIBRATION is expressed in ACTIVE ARRAY pixels -- on this device fx 2777.6
+     * with cx 2044.9, which is half of 4080. The recorded stream is not the active array: it is
+     * SCALER_CROP_REGION, a 2448x1836 window here, scaled up to 3060x4080. So the focal length
+     * of the frames actually written to disk is 2777.6 x 4080/2448 = 4629 px, and using the raw
+     * characteristic understates every angle-to-pixel conversion by 1.67x.
+     *
+     * This was got backwards once already, on 2026-09-03: FocalLengthHelper's larger number was
+     * assumed to be the wrong one because it disagreed with the HAL, when in fact the two describe
+     * DIFFERENT COORDINATE SYSTEMS and the helper was the one describing the file. The right
+     * answer takes the HAL's measured, per-frame value -- which tracks focus breathing, as the
+     * helper's nominal computation cannot -- and puts it in the frame's own pixels.
+     */
+    private float cropMagnification() {
+        if (mLastResult == null || mCameraSettingsManager == null) {
+            return 1f;
+        }
+        Rect crop = mLastResult.get(CaptureResult.SCALER_CROP_REGION);
+        Size video = mCameraSettingsManager.getVideoSize();
+        if (crop == null || video == null || crop.width() <= 0 || crop.height() <= 0) {
+            return 1f;
+        }
+        // Long side to long side, so the sensor's 90-degree rotation into the stream cannot
+        // silently pair a width with a height.
+        float videoLong = Math.max(video.getWidth(), video.getHeight());
+        float cropLong = Math.max(crop.width(), crop.height());
+        float m = videoLong / cropLong;
+        return m > 0 ? m : 1f;
     }
 
     /** Most recent metered exposure time in ns, or 0. */
