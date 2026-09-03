@@ -436,6 +436,28 @@ public class Camera2Proxy {
     // (exposure <= 1 / lowerFps). Everything here is a no-op unless the controller is enabled.
 
     /** The device's available AE target FPS ranges, or an empty array. */
+    /**
+     * Push the current settings onto the running session.
+     *
+     * A preference change normally waits for the next session, because that is when the request
+     * builder is filled. Anything that has to change WITHIN an outing -- the test matrix flipping
+     * OIS between two 30 s clips -- needs the request re-issued, or the clip records one state
+     * while the settings say another.
+     */
+    public void reapplyCameraSettings() {
+        if (mCaptureSession == null || mPreviewRequestBuilder == null
+                || mCameraSettingsManager == null) {
+            return;
+        }
+        try {
+            mCameraSettingsManager.updateRequestBuilder(mPreviewRequestBuilder);
+            mCaptureSession.setRepeatingRequest(
+                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+        } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
+            Log.w(TAG, "Could not re-apply camera settings: " + e);
+        }
+    }
+
     /** Most recent metered ISO, or 0. Paired with getLastExposureNs() it is the exposure value
      *  the AE had settled on, which is what a manual override has to preserve. */
     public int getLastIso() {

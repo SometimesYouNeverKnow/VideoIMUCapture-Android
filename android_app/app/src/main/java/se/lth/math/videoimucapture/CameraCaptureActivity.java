@@ -170,6 +170,89 @@ public class CameraCaptureActivity extends AppCompatActivity {
     }
 
     /**
+     * The test matrix (see {@link TestPlan}), one button per cell.
+     *
+     * The operator picks a cell; the app sets that cell's settings, shows the one thing it cannot
+     * set -- how to hold the phone -- counts down, records for a fixed time, stops itself, and
+     * puts the operator's own settings back. The clip lands in a directory named for the cell.
+     *
+     * Fixed duration and self-stopping are the point, not conveniences: two clips of different
+     * lengths, or two clips whose settings drifted because a run was aborted halfway, do not
+     * compare, and a comparison is the only reason any of these clips exist.
+     */
+    public void showTestPlan(@SuppressWarnings("unused") android.view.MenuItem unused) {
+        final java.util.List<TestPlan.Step> steps = TestPlan.steps();
+        String[] titles = new String[steps.size()];
+        for (int i = 0; i < steps.size(); i++) {
+            titles[i] = steps.get(i).title;
+        }
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Test matrix")
+                .setItems(titles, (d, which) -> confirmTestStep(steps.get(which)))
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private void confirmTestStep(TestPlan.Step step) {
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle(step.title)
+                .setMessage(step.instruction + "\n\nRecords " + step.seconds
+                        + " s and stops by itself.")
+                .setPositiveButton("Start", (d, w) -> runTestStep(step))
+                .setNegativeButton("Back", (d, w) -> showTestPlan(null))
+                .show();
+    }
+
+    private void runTestStep(TestPlan.Step step) {
+        CameraCaptureFragment frag = getmCameraCaptureFragment();
+        if (frag == null || mCaptureModeManager == null) {
+            return;
+        }
+        final android.content.SharedPreferences sp =
+                androidx.preference.PreferenceManager.getDefaultSharedPreferences(this);
+        final java.util.Map<String, Object> previous = TestPlan.apply(sp, step);
+        // OIS and its data mode live in the capture REQUEST, not in the recording, so a change
+        // has to be pushed to the running session or the clip records the previous state while
+        // the file says otherwise -- which is exactly the class of quiet mismatch this app keeps
+        // finding in itself.
+        if (mCamera2Proxy != null) {
+            mCamera2Proxy.reapplyCameraSettings();
+        }
+        mCaptureModeManager.setTestTag(step.id);
+
+        final android.os.Handler h = new Handler(getMainLooper());
+        final int[] countdown = {3};
+        Runnable tick = new Runnable() {
+            @Override
+            public void run() {
+                if (countdown[0] > 0) {
+                    android.widget.Toast.makeText(CameraCaptureActivity.this,
+                            step.id + " in " + countdown[0], android.widget.Toast.LENGTH_SHORT)
+                            .show();
+                    countdown[0]--;
+                    h.postDelayed(this, 1000L);
+                    return;
+                }
+                frag.clickToggleRecording(null);
+                android.widget.Toast.makeText(CameraCaptureActivity.this,
+                        "recording " + step.id + " for " + step.seconds + " s",
+                        android.widget.Toast.LENGTH_SHORT).show();
+                h.postDelayed(() -> {
+                    frag.clickToggleRecording(null);
+                    mCaptureModeManager.setTestTag(null);
+                    TestPlan.restore(sp, previous);
+                    if (mCamera2Proxy != null) {
+                        mCamera2Proxy.reapplyCameraSettings();
+                    }
+                    android.widget.Toast.makeText(CameraCaptureActivity.this,
+                            step.id + " done", android.widget.Toast.LENGTH_LONG).show();
+                }, step.seconds * 1000L);
+            }
+        };
+        h.post(tick);
+    }
+
+    /**
      * The volume keys step exposure compensation, during a recording, without ending it (#28).
      *
      * A hardware key rather than an on-screen control on purpose: the moment this is for is

@@ -116,6 +116,12 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
     // combination the 09:39 walk should have produced and did not.
 
     private boolean mVideoOwnsSession = false;
+    // Set for the duration of one test-matrix step, so its clip is named for its cell.
+    private String mTestTag = null;
+
+    public void setTestTag(String tag) {
+        mTestTag = tag;
+    }
 
     /**
      * Claim (or join) a capture session for a video recording.
@@ -131,7 +137,14 @@ public class CaptureModeManager implements StillnessTrigger.Listener {
             Log.i(TAG, "video joining the active " + mMode + " run in " + mRunDir);
             return mRunDir;
         }
-        File dir = mActivity.newCaptureDir(mMode.name().toLowerCase(java.util.Locale.US) + "_vid");
+        // A test-matrix clip names its own cell. Without this the cell lives only in whatever the
+        // operator remembers, and a matrix whose cells cannot be told apart afterwards is not a
+        // matrix.
+        String prefix = mMode.name().toLowerCase(java.util.Locale.US) + "_vid";
+        if (mTestTag != null) {
+            prefix = "test" + mTestTag + "_" + prefix;
+        }
+        File dir = mActivity.newCaptureDir(prefix);
         if (dir == null) {
             return null;
         }

@@ -11,6 +11,12 @@
         app:showAsAction="ifRoom"/>
 
     <item
+        android:id="@+id/tests"
+        android:title="@string/tests_toolbar"
+        android:onClick="showTestPlan"
+        app:showAsAction="ifRoom|withText"/>
+
+    <item
         android:id="@+id/settings"
         android:title="@string/settings_toolbar"
         android:icon="@drawable/ic_gear"
