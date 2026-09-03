@@ -518,6 +518,17 @@ public class Camera2Proxy {
         return step == null ? 0f : mExposureCompensation * step.floatValue();
     }
 
+    /** CONTROL_AE_STATE of the last result, or -1. 2 is CONVERGED. */
+    public int getLastAeState() {
+        if (mLastResult != null) {
+            Integer s = mLastResult.get(CaptureResult.CONTROL_AE_STATE);
+            if (s != null) {
+                return s;
+            }
+        }
+        return -1;
+    }
+
     /** The device's own shutter limits, ns, or null if it does not say. */
     public Range<Long> getExposureTimeRange() {
         return mCameraCharacteristics != null

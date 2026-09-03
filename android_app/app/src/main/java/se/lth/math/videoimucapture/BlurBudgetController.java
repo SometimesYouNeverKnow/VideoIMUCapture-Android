@@ -44,6 +44,7 @@ public class BlurBudgetController {
     private static final int CAPTURE_FPS = VideoEncoderCore.FRAME_RATE;
     // Below this exposure a tighter cap buys nothing and only starves the sensor.
     private static final float MIN_USEFUL_EXPOSURE_S = 0.001f;
+    private static final int AE_STATE_CONVERGED = 2;    // CaptureResult.CONTROL_AE_STATE_CONVERGED
 
     public interface Listener {
         /**
@@ -74,6 +75,22 @@ public class BlurBudgetController {
     private boolean mManualEnabled = false;
     private long mHeldNs = 0;
     private int mManualIso = 0;
+    // The AE's OWN answer for this scene, as ISO x nanoseconds -- the quantity a manual shutter
+    // has to preserve. Measured 2026-09-03: taking this from whatever the metering happened to
+    // say at the instant of engagement underexposed a walk by 2.1 stops, because the AE was
+    // still climbing out of a stale convergence from before the phone was raised. So the target
+    // is only accepted once the metering has been CONVERGED AND STEADY for a full second, and
+    // it is re-taken periodically -- a walk that starts in shade and ends in sun has more than
+    // one right answer, and freezing the first is how you get a black clip at the end of it.
+    private double mAeTargetLight = 0;          // ISO * ns
+    private final java.util.ArrayDeque<Double> mConverged = new java.util.ArrayDeque<>();
+    private static final int STEADY_TICKS = 5;          // 1 s at 5 Hz
+    private static final double STEADY_TOLERANCE = 0.15;
+    private static final long REMETER_PERIOD_MS = 6000; // hand back to AE this often
+    private static final long REMETER_WINDOW_MS = 1400; // and give it this long to settle
+    private long mHeldSinceMs = 0;
+    private long mRemeterUntilMs = 0;
+    private boolean mWarnedNoTarget = false;
 
     private final Runnable mTick = new Runnable() {
         @Override
@@ -122,10 +139,12 @@ public class BlurBudgetController {
                 mProxy.setAeTargetFpsRange(null);
                 mApplied = null;
             }
-            mProxy.clearManualExposure();
-            mHeldNs = 0;
-            mManualIso = 0;
+            releaseToAe();
         }
+        // The AE target belongs to a scene, and the next recording is a different one.
+        mAeTargetLight = 0;
+        mRemeterUntilMs = 0;
+        mWarnedNoTarget = false;
         Log.i(TAG, "blur budget off");
     }
 
@@ -184,39 +203,111 @@ public class BlurBudgetController {
      * It releases the moment the motion no longer needs it, so a walk that stops for a photograph
      * gets its auto exposure back rather than staying pinned at ISO 3200. Off by default.
      */
+    /**
+     * Track what the auto-exposure decides for this scene, and only believe it once it has
+     * stopped moving.
+     *
+     * CONVERGED on its own is not enough: the first frames of a recording can report CONVERGED
+     * while carrying the metering of whatever the camera was looking at before it was raised.
+     * Measured on testB, 2026-09-03 — seven frames of "converged" at ISO 159, then a climb to
+     * 184 and still climbing when the cap engaged; the AE's real answer for that room, from the
+     * control clip recorded 47 seconds earlier, was ISO 675 at the same shutter. Steadiness is
+     * the property that separates those, so a target must hold within a tolerance for a second
+     * before it is allowed to freeze 30 seconds of capture.
+     */
+    private void trackAeTarget(long meteredNs) {
+        int iso = mProxy.getLastIso();
+        if (mProxy.isManualExposureHeld() || iso <= 0 || meteredNs <= 0
+                || mProxy.getLastAeState() != AE_STATE_CONVERGED) {
+            if (!mProxy.isManualExposureHeld()) {
+                mConverged.clear();   // a search restarts the steadiness clock
+            }
+            return;
+        }
+        double light = (double) iso * (double) meteredNs;
+        mConverged.addLast(light);
+        while (mConverged.size() > STEADY_TICKS) {
+            mConverged.removeFirst();
+        }
+        if (mConverged.size() < STEADY_TICKS) {
+            return;
+        }
+        double lo = Double.MAX_VALUE, hi = 0;
+        for (double v : mConverged) {
+            lo = Math.min(lo, v);
+            hi = Math.max(hi, v);
+        }
+        if (lo > 0 && (hi - lo) / lo <= STEADY_TOLERANCE) {
+            mAeTargetLight = light;
+        }
+    }
+
     private void applyManualCap(float maxExposureS, long meteredNs) {
         if (!mManualEnabled) {
             return;
         }
+        long now = android.os.SystemClock.elapsedRealtime();
+        trackAeTarget(meteredNs);
+
         long rangeFloorNs = 1000000000L / CAPTURE_FPS;   // the shortest the AE-range path can force
         long wantNs = (long) (maxExposureS * 1e9f);
+        boolean held = mProxy.isManualExposureHeld();
+
         if (wantNs >= rangeFloorNs) {
             // The range path can do this on its own; a manual hold would buy nothing and would
             // cost the AE its judgement about everything else in the scene.
-            if (mProxy.isManualExposureHeld()) {
+            if (held) {
                 Log.i(TAG, "manual shutter released; budget reachable by AE again");
-                mProxy.clearManualExposure();
-                mManualIso = 0;
+                releaseToAe();
             }
             return;
         }
-        // Preserve exposure value: halving the shutter doubles the ISO. Base it on the last
-        // METERED pair, which is the AE's own answer for this light, not on a guess.
-        int meteredIso = mProxy.getLastIso();
-        if (meteredIso <= 0 || meteredNs <= 0) {
-            return;   // no metering to scale from yet
+
+        // Periodically hand the shutter back so the AE can answer again. A walk goes from shade
+        // into sun, and an exposure value taken once at the start is only right at the start.
+        // The frames spent re-metering are longer and blurrier -- and identifiable in the file
+        // by ae_mode == ON, so a solve can weight them accordingly rather than being surprised.
+        if (held && now - mHeldSinceMs > REMETER_PERIOD_MS) {
+            releaseToAe();
+            mRemeterUntilMs = now + REMETER_WINDOW_MS;
+            return;
         }
-        long baseNs = mProxy.isManualExposureHeld() && mManualIso > 0 ? mHeldNs : meteredNs;
-        int baseIso = mProxy.isManualExposureHeld() && mManualIso > 0 ? mManualIso : meteredIso;
-        double scale = (double) baseNs / (double) wantNs;
-        int iso = (int) Math.round(baseIso * scale);
+        if (!held && now < mRemeterUntilMs) {
+            return;   // let the AE settle; trackAeTarget is watching it
+        }
+
+        if (mAeTargetLight <= 0) {
+            // No steady metering yet. Do NOT engage on a guess: an underexposed clip is a worse
+            // failure than a blurred one, because the noise floor cannot be undone and the blur
+            // at least leaves the geometry.
+            if (!mWarnedNoTarget) {
+                Log.i(TAG, "manual shutter waiting: auto exposure has not settled yet");
+                mWarnedNoTarget = true;
+            }
+            return;
+        }
+        int iso = (int) Math.round(mAeTargetLight / (double) wantNs);
         // Do not re-issue a repeating request for a change the sensor cannot even express.
-        if (mProxy.isManualExposureHeld() && Math.abs(wantNs - mHeldNs) < mHeldNs / 8) {
+        if (held && Math.abs(wantNs - mHeldNs) < mHeldNs / 8) {
             return;
         }
         mProxy.setManualExposure(wantNs, iso);
+        if (!held) {
+            mHeldSinceMs = now;
+            Log.i(TAG, String.format(java.util.Locale.US,
+                    "manual shutter engaged: %.2f ms at ISO %d, holding the AE's %.0f ISO*ms",
+                    wantNs / 1e6, iso, mAeTargetLight / 1e6));
+        }
         mHeldNs = wantNs;
         mManualIso = iso;
+    }
+
+    private void releaseToAe() {
+        mProxy.clearManualExposure();
+        mManualIso = 0;
+        mHeldNs = 0;
+        mHeldSinceMs = 0;
+        mConverged.clear();
     }
 
     /**
