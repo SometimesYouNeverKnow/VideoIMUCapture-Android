@@ -110,6 +110,31 @@ public final class TestPlan {
                 25, prefs("blur_budget_manual", false, "lock_radiometry", false,
                         "ois", false, "ois_data", false)));
 
+        // Z1 and Z2 are a PAIR and only mean anything together: same scene, same position, one
+        // setting different. They answer ReconStab #48, which is currently blocking any absolute
+        // blur, shear or focal number this repo produces.
+        //
+        // The question: at zoom_ratio 0.6 every frame reports SCALER_CROP_REGION (815,611)-
+        // (3263,2447) -- exactly 0.6 of the array -- while at 1.0 it reports the full 4080x3060.
+        // So the crop tracks the request. What is NOT known is whether the recorded stream
+        // actually honours it. If it does, the 0.6 clip is a 1.667x zoom IN and its focal is
+        // 4629 px; if the metadata is bookkeeping the HAL then ignores, the focal is 2778 and
+        // every solve initialised at 4604 has been 67% wrong. Two clips of the same wall settle
+        // it in one look: either Z2 is tighter than Z1 or it is not.
+        String zoomShot = "Point the phone at something with detail across the WHOLE frame — a "
+                + "bookshelf, a cluttered bench, a brick wall — from about two metres.\n\nHold as "
+                + "still as you can and DO NOT MOVE BETWEEN Z1 AND Z2. Shoot them back to back "
+                + "from the same spot; if the phone moves, the pair is worthless.";
+        out.add(new Step("Z1", "Z1 - zoom check, ratio 1.0",
+                zoomShot + "\n\nThis one at zoom 1.0 — the full sensor field.",
+                12, prefs("zoom_ratio", 1.0f, "blur_budget_manual", false,
+                        "lock_radiometry", false, "ois", false, "ois_data", false)));
+        out.add(new Step("Z2", "Z2 - zoom check, ratio 0.6",
+                zoomShot + "\n\nThis one at zoom 0.6 — your usual setting. If it looks TIGHTER "
+                        + "than Z1, the crop is real.",
+                12, prefs("zoom_ratio", 0.6f, "blur_budget_manual", false,
+                        "lock_radiometry", false, "ois", false, "ois_data", false)));
+
         return out;
     }
 
@@ -125,6 +150,9 @@ public final class TestPlan {
             } else if (want instanceof Integer) {
                 previous.put(e.getKey(), sp.getInt(e.getKey(), 0));
                 ed.putInt(e.getKey(), (Integer) want);
+            } else if (want instanceof Float) {
+                previous.put(e.getKey(), sp.getFloat(e.getKey(), 1.0f));
+                ed.putFloat(e.getKey(), (Float) want);
             } else if (want instanceof String) {
                 previous.put(e.getKey(), sp.getString(e.getKey(), ""));
                 ed.putString(e.getKey(), (String) want);
@@ -143,6 +171,8 @@ public final class TestPlan {
                 ed.putBoolean(e.getKey(), (Boolean) was);
             } else if (was instanceof Integer) {
                 ed.putInt(e.getKey(), (Integer) was);
+            } else if (was instanceof Float) {
+                ed.putFloat(e.getKey(), (Float) was);
             } else if (was instanceof String) {
                 ed.putString(e.getKey(), (String) was);
             }
