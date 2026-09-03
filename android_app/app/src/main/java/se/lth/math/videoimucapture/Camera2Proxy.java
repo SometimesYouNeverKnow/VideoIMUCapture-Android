@@ -641,7 +641,13 @@ public class Camera2Proxy {
         if (mLastResult != null) {
             float[] k = mLastResult.get(CaptureResult.LENS_INTRINSIC_CALIBRATION);
             if (k != null && k.length >= 1 && k[0] > 0f) {
-                return k[0] * cropMagnification();
+                // NOT multiplied by cropMagnification(), on measurement rather than on argument.
+                // The crop reasoning below is sound and its conclusion was WRONG for this device
+                // at this zoom setting: measured from gyro rotation against optical flow on four
+                // 30 s clips, the recorded frames' focal is 2,304-3,085 px at 4080 -- the HAL's
+                // own number, uncorrected. See ReconStab #48; until that is settled the app uses
+                // the value that a measurement supports.
+                return k[0];
             }
         }
         Float f = mFocalLengthHelper.getFocalLengthPixel();

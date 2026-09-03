@@ -84,11 +84,29 @@ public class BlurBudgetController {
     // one right answer, and freezing the first is how you get a black clip at the end of it.
     private double mAeTargetLight = 0;          // ISO * ns
     private final java.util.ArrayDeque<Double> mConverged = new java.util.ArrayDeque<>();
-    private static final int STEADY_TICKS = 5;          // 1 s at 5 Hz
-    private static final double STEADY_TOLERANCE = 0.15;
-    private static final long REMETER_PERIOD_MS = 6000; // hand back to AE this often
-    private static final long REMETER_WINDOW_MS = 1400; // and give it this long to settle
+    // These four are set by two measurements and one report from the field, all 2026-09-03.
+    //
+    // From the operator, watching the first version run: "it was way too laggy, not too fast. it
+    // was reacting, then dumping after a second, then overcorrecting." That is this controller's
+    // own re-metering cycle, seen from outside -- hold, hand back, AE lurches, grab again, every
+    // six seconds.
+    //
+    // From the file, which agrees with him: inside those windows the metering ran 3,250 -> 10,884
+    // ISO*ms and was STILL CLIMBING when the window closed. Handing the AE 1.4 s and taking the
+    // answer back is asking a question and interrupting the reply. And at the start of a clip the
+    // AE reports CONVERGED for a full second while carrying the metering of whatever the phone was
+    // pointed at before it was raised -- 2,950 against a true 12,100 -- so a one-second steadiness
+    // test passes on a stale value.
+    //
+    // So: converge ONCE, properly, before doing anything, and then leave the AE alone. Rare and
+    // long beats frequent and short on both counts -- it converges, and it does not pump.
+    private static final long WARMUP_MS = 3000;          // pure AE at the start; engage after
+    private static final int STEADY_TICKS = 10;          // 2 s at 5 Hz
+    private static final double STEADY_TOLERANCE = 0.10;
+    private static final long REMETER_PERIOD_MS = 30000; // a walk changes light over minutes
+    private static final long REMETER_WINDOW_MS = 3000;  // long enough for the AE to finish
     private long mHeldSinceMs = 0;
+    private long mStartedMs = 0;
     private long mRemeterUntilMs = 0;
     private boolean mWarnedNoTarget = false;
 
@@ -123,6 +141,7 @@ public class BlurBudgetController {
         mManualEnabled = manualShutter;
         mGyroEma = mImu != null ? mImu.getLatestGyroMagnitude() : 0f;
         mRunning = true;
+        mStartedMs = android.os.SystemClock.elapsedRealtime();
         mHandler.removeCallbacks(mTick);
         mHandler.post(mTick);
         Log.i(TAG, "blur budget on, " + mBudgetPx + " px; hold-still alarm at "
@@ -248,6 +267,12 @@ public class BlurBudgetController {
         }
         long now = android.os.SystemClock.elapsedRealtime();
         trackAeTarget(meteredNs);
+
+        // Let the auto exposure meet the scene before taking the shutter off it. Three seconds of
+        // a walk is worth more than thirty seconds held at the wrong exposure value.
+        if (now - mStartedMs < WARMUP_MS) {
+            return;
+        }
 
         long rangeFloorNs = 1000000000L / CAPTURE_FPS;   // the shortest the AE-range path can force
         long wantNs = (long) (maxExposureS * 1e9f);
