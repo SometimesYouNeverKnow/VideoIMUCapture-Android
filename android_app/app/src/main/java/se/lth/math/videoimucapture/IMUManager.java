@@ -28,8 +28,12 @@ public class IMUManager extends SensorEventCallback {
     // [t-x, t+x] of the gyro data at t, then the original acceleration data
     // is used instead of linear interpolation
     private final long mInterpolationTimeResolution = 500; // nanoseconds
+    // Fallback period if a sensor does not report its own minDelay. The real rate is each
+    // sensor's minDelay, asked for at registration -- see register() and ReconStab #42.
     private final int mSensorRate = 5000; //Us, 200Hz (HIGH_SAMPLING_RATE_SENSORS declared)
+    private static final int MIN_SENSOR_PERIOD_US = 1000; // 1 kHz ceiling; a floor on the period
     private final int mDerivedRate = 10000; //Us, 100Hz for OS-fused orientation streams
+    private int mRequestedRateUs = 0; // what register() actually asked for, recorded in the file
     private long mEstimatedSensorRate = 0; // ns
     private long mPrevTimestamp = 0; // ns
     private float[] mSensorPlacement = null;
@@ -400,6 +404,20 @@ public class IMUManager extends SensorEventCallback {
             builder.setPressureInfo(mPressure.toString()).setPressureResolution(mPressure.getResolution());
         }
         builder.setSampleFrequency(getSensorFrequency());
+        // What was asked for, beside what arrived (#42) -- the two are not the same number and
+        // only one of them has ever been in the file.
+        if (mRequestedRateUs > 0) {
+            builder.setRequestedPeriodUs(mRequestedRateUs);
+        }
+        if (mGyro != null) {
+            builder.setGyroMinDelayUs(mGyro.getMinDelay());
+        }
+        if (mAccel != null) {
+            builder.setAccelMinDelayUs(mAccel.getMinDelay());
+        }
+        if (mMag != null) {
+            builder.setMagMinDelayUs(mMag.getMinDelay());
+        }
 
         //Store translation for sensor placement in device coordinate system.
         if (mSensorPlacement != null) {
@@ -577,6 +595,19 @@ public class IMUManager extends SensorEventCallback {
     }
 
     /**
+     * The sampling period, in microseconds, this sensor says is the fastest it will go.
+     * getMinDelay() is 0 for on-change sensors and negative for one-shot ones; in either case
+     * there is no continuous rate to ask for, so the caller's default stands.
+     */
+    private static int fastestRate(Sensor sensor, int fallbackUs) {
+        if (sensor == null) {
+            return fallbackUs;
+        }
+        int minDelay = sensor.getMinDelay();
+        return minDelay > 0 ? minDelay : fallbackUs;
+    }
+
+    /**
      * This will register all IMU listeners
      * https://stackoverflow.com/questions/3286815/sensoreventlistener-in-separate-thread
      */
@@ -590,9 +621,25 @@ public class IMUManager extends SensorEventCallback {
         // Blocks until looper is prepared, which is fairly quick
         Handler sensorHandler = new Handler(mSensorThread.getLooper());
         mSensorHandler = sensorHandler;
-        mSensorManager.registerListener(this, mAccel, mSensorRate, sensorHandler);
-        mSensorManager.registerListener(this, mGyro, mSensorRate, sensorHandler);
-        mSensorManager.registerListener(this, mMag, mSensorRate, sensorHandler);
+        // ReconStab #42: 200 Hz was a constant, and it was leaving the device's own ceiling on the
+        // table. On the S24U the gyro and accelerometer both report minDelay 2404 us (415.97 Hz),
+        // and a 5000 us request was delivering a uniform 188.9 Hz -- 3.1 gyro samples across a
+        // 16.7 ms exposure, which can fit a straight blur kernel but not a curved one. Asking each
+        // sensor for ITS OWN minDelay is device-agnostic: a phone that cannot go faster returns
+        // its own floor and nothing changes. Clamped at 1000 us so a sensor that reports 0
+        // (meaning "on-change") or something absurd cannot ask for a megahertz.
+        int inertialRate = Math.max(fastestRate(mGyro, mSensorRate), MIN_SENSOR_PERIOD_US);
+        int accelRate = Math.max(fastestRate(mAccel, mSensorRate), MIN_SENSOR_PERIOD_US);
+        mRequestedRateUs = inertialRate;
+        Log.i(TAG, String.format("IMU rate requested: gyro %d us (%.1f Hz), accel %d us (%.1f Hz)",
+                inertialRate, 1e6 / inertialRate, accelRate, 1e6 / accelRate));
+        mSensorManager.registerListener(this, mAccel, accelRate, sensorHandler);
+        mSensorManager.registerListener(this, mGyro, inertialRate, sensorHandler);
+        // The magnetometer gates every IMU record -- syncInertialData will not emit one without
+        // two mag samples to interpolate between -- but it is a 100 Hz part on this device and
+        // asking it for 416 Hz simply gets 100. It is registered at the same requested period so
+        // it always runs as fast as it can, which is what keeps the gyro queue from waiting.
+        mSensorManager.registerListener(this, mMag, inertialRate, sensorHandler);
 
         // Auxiliary sensors — every one is optional.
         if (mPressure != null) {

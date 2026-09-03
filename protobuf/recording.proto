@@ -121,6 +121,21 @@ message VideoFrameMetaData {
   // factory value cannot see, and is exactly what a focal-refining solve wants to compare against.
   // Empty on devices that only expose the static value.
   repeated float lens_intrinsic_calibration = 25;
+
+  // Did the hardware stabilize this frame, and how (ReconStab #41)? The app REQUESTS a
+  // stabilization mode; a request is not an answer. Only the HAL's own result key says what the
+  // OIS motor and the digital warper actually did. Every gyro-derived blur kernel and every
+  // rolling-shutter correction assumes the optical path did not move under the exposure -- if OIS
+  // was live and unlogged, that assumption is quietly false and nothing downstream can tell.
+  // `optional` because 0 is the reading that matters most here: OFF is the good news.
+  optional int32 lens_optical_stabilization_mode = 26;  // LENS_OPTICAL_STABILIZATION_MODE: 0 OFF, 1 ON
+  optional int32 video_stabilization_mode = 27;         // CONTROL_VIDEO_STABILIZATION_MODE: 0 OFF, 1 ON, 2 PREVIEW
+  optional int32 distortion_correction_mode = 28;       // DISTORTION_CORRECTION_MODE: 0 OFF, 1 FAST, 2 HIGH_QUALITY
+  // STATISTICS_OIS_DATA_MODE as the HAL reports it back. This device advertises no available OIS
+  // data modes at all, which would mean the motor's actions can never be logged -- but "not
+  // advertised" and "not supported" are different claims, and the request is made anyway (#44).
+  // This field is how the difference becomes visible instead of assumed.
+  optional int32 ois_data_mode = 29;                    // 0 OFF, 1 ON
 }
 
 // Barometer sample. time_ns is the sensor event timestamp, same clock as IMUData.time_ns.
@@ -376,6 +391,16 @@ message IMUInfo {
   // added for barometer support
   string pressure_info = 9;
   float pressure_resolution = 10;
+
+  // ReconStab #42. `sample_frequency` above is what ARRIVED; these are what was asked for and
+  // what the hardware claimed it could do. A clip that records only the achieved rate cannot
+  // distinguish "the app asked for too little" from "the sensor gave all it had", and the first
+  // of those was true here for every clip before 2026-09-03: 200 Hz requested against a 416 Hz
+  // part. Blur-kernel work reads these to know how many gyro samples span an exposure.
+  optional int32 requested_period_us = 11;  // period passed to registerListener for gyro/accel
+  optional int32 gyro_min_delay_us = 12;    // Sensor.getMinDelay(): the part's own claimed floor
+  optional int32 accel_min_delay_us = 13;
+  optional int32 mag_min_delay_us = 14;
 }
 
 message IMUData {

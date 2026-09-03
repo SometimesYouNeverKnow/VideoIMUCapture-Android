@@ -34,6 +34,7 @@ import java.util.stream.Collectors;
 
 
 public class CameraSettingsManager {
+    private static final String TAG = "CameraSettingsManager";
     private enum Setting {OIS, OIS_DATA, DVS, DISTORTION_CORRECTION, VIDEO_SIZE, FOCUS_MODE, EXPOSURE_MODE, ZOOM_RATIO, PHYSICAL_CAMERA};
     private Map<Setting, CameraSetting> mCameraSettings;
     private boolean mInitialized = false;
@@ -80,10 +81,25 @@ public class CameraSettingsManager {
         );
 
         if (Build.VERSION.SDK_INT >= 28) {
+            int[] oisDataModes = cameraCharacteristics.get(
+                    CameraCharacteristics.STATISTICS_INFO_AVAILABLE_OIS_DATA_MODES);
+            if (oisDataModes == null) {
+                // The device advertises no OIS data modes -- which is what this phone does, and
+                // is why OIS_samples has been empty in every clip this fork has recorded (#41).
+                // "Not advertised" and "not supported" are different claims, and a vendor HAL
+                // that omits the characteristic may still honour the request key. So ask anyway,
+                // and let the recorded ois_data_mode (proto field 29) and the sample count say
+                // which it was. The request is set inside a try/catch, so a HAL that rejects the
+                // key costs a log line, not a session.
+                Log.i(TAG, "STATISTICS_INFO_AVAILABLE_OIS_DATA_MODES is null; requesting OIS "
+                        + "data anyway -- the recorded ois_data_mode will say whether it took");
+                oisDataModes = new int[]{CameraMetadata.STATISTICS_OIS_DATA_MODE_OFF,
+                        CameraMetadata.STATISTICS_OIS_DATA_MODE_ON};
+            }
             mCameraSettings.put(Setting.OIS_DATA,
                     new CameraSettingBoolean(
                             "ois_data",
-                            cameraCharacteristics.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_OIS_DATA_MODES),
+                            oisDataModes,
                             CameraMetadata.STATISTICS_OIS_DATA_MODE_ON,
                             CaptureRequest.STATISTICS_OIS_DATA_MODE,
                             false
@@ -117,8 +133,10 @@ public class CameraSettingsManager {
                     )
             );
         } else {
-            mCameraSettings.put(Setting.OIS_DATA,
-                    new CameraSettingBoolean("ois_data", null, 1, null, false)
+            // Was a second OIS_DATA entry, which silently overwrote the one built above on any
+            // pre-28 device. Distortion correction is the setting this branch is standing in for.
+            mCameraSettings.put(Setting.DISTORTION_CORRECTION,
+                    new CameraSettingBoolean("distortion_correction", null, 1, null, false)
             );
         }
 
@@ -267,10 +285,13 @@ class CameraSettingBoolean extends CameraSetting {
         if (!mRequestable) {
             return;
         }
-        if (isOn()) {
-            builder.set(mRequestKey, mOnValue);
-        } else {
-            builder.set(mRequestKey, mOffValue);
+        // A key may be requested that the device never advertised (OIS data, #44): setting it is
+        // how we find out whether the HAL honours it. One rejected key must not cost the session.
+        try {
+            builder.set(mRequestKey, isOn() ? mOnValue : mOffValue);
+        } catch (IllegalArgumentException e) {
+            Log.w("CameraSetting", "capture request rejected key for '" + mPrefKey
+                    + "': " + e.getMessage());
         }
     }
 

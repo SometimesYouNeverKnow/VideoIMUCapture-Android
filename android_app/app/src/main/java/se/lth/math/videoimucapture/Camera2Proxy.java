@@ -1085,6 +1085,28 @@ public class Camera2Proxy {
         if (lensState != null) {
             b.setLensState(lensState);
         }
+        // What the hardware DID about stabilization, not what we asked for (ReconStab #41).
+        // The request is set from a preference; the result is the HAL's answer, and on a vendor
+        // HAL the two are allowed to differ. A gyro-derived blur kernel is only valid while the
+        // optical path is fixed, so an unrecorded OIS is a silent invalidation of every kernel.
+        Integer ois = result.get(CaptureResult.LENS_OPTICAL_STABILIZATION_MODE);
+        if (ois != null) {
+            b.setLensOpticalStabilizationMode(ois);
+        }
+        Integer eis = result.get(CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE);
+        if (eis != null) {
+            b.setVideoStabilizationMode(eis);
+        }
+        if (Build.VERSION.SDK_INT >= 28) {
+            Integer distortion = result.get(CaptureResult.DISTORTION_CORRECTION_MODE);
+            if (distortion != null) {
+                b.setDistortionCorrectionMode(distortion);
+            }
+            Integer oisDataMode = result.get(CaptureResult.STATISTICS_OIS_DATA_MODE);
+            if (oisDataMode != null) {
+                b.setOisDataMode(oisDataMode);
+            }
+        }
         android.util.Pair<Double, Double>[] noise = result.get(CaptureResult.SENSOR_NOISE_PROFILE);
         if (noise != null) {
             for (android.util.Pair<Double, Double> p : noise) {
