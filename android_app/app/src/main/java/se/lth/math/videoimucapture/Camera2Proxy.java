@@ -1329,6 +1329,28 @@ public class Camera2Proxy {
         if (ev != null) {
             b.setAeExposureCompensation(ev);
         }
+        // Intrinsics sampled WITHIN the capture (#50). API 35; this device runs 36 and lists the
+        // key on all seven cameras. Whether it fills it is a different question -- the key beside
+        // it, oisSamples, is listed on all seven and returns null on every frame -- so this is
+        // read null-guarded like everything else and graded PRESENT / EMPTY / ABSENT afterwards.
+        if (Build.VERSION.SDK_INT >= 35) {
+            android.hardware.camera2.params.LensIntrinsicsSample[] samples =
+                    result.get(CaptureResult.STATISTICS_LENS_INTRINSICS_SAMPLES);
+            if (samples != null) {
+                for (android.hardware.camera2.params.LensIntrinsicsSample s : samples) {
+                    RecordingProtos.VideoFrameMetaData.LensIntrinsicsSample.Builder sb =
+                            RecordingProtos.VideoFrameMetaData.LensIntrinsicsSample.newBuilder()
+                                    .setTimeNs(s.getTimestampNanos());
+                    float[] k = s.getLensIntrinsics();
+                    if (k != null) {
+                        for (float v : k) {
+                            sb.addIntrinsics(v);
+                        }
+                    }
+                    b.addLensIntrinsicsSamples(sb);
+                }
+            }
+        }
         android.util.Pair<Double, Double>[] noise = result.get(CaptureResult.SENSOR_NOISE_PROFILE);
         if (noise != null) {
             for (android.util.Pair<Double, Double> p : noise) {

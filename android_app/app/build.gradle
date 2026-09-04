@@ -12,7 +12,7 @@ if (keystorePropsFile.exists()) {
 
 android {
     namespace "se.lth.math.videoimucapture"
-    compileSdkVersion 34
+    compileSdkVersion 35
     buildToolsVersion "35.0.1"
 
     defaultConfig {

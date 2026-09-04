@@ -142,6 +142,29 @@ message VideoFrameMetaData {
   // with it a bake can undo exactly what the operator asked for. `optional` because 0 -- no
   // compensation -- is the value most frames will honestly have.
   optional int32 ae_exposure_compensation = 30;
+
+  // STATISTICS_LENS_INTRINSICS_SAMPLES (API 35): the intrinsic calibration sampled WITHIN this
+  // capture, each sample stamped on the same clock as everything else in this file.
+  //
+  // Why this is the interesting one (ReconStab #50). `lens_intrinsic_calibration` above is one
+  // vector per frame; this is a time series through the frame, and the two things that move it
+  // during a single exposure are exactly the two the solve is currently blocked on:
+  //   - OIS. A moving lens element shifts the principal point, so this is the motor's action
+  //     expressed in the camera model rather than as raw shift counts -- which matters because
+  //     STATISTICS_OIS_SAMPLES is advertised in this device's result-key list on all seven
+  //     cameras and returns null on every frame (#44).
+  //   - Rolling shutter. Intrinsics across the readout are what a row-dependent correction needs,
+  //     and shear is now the largest motion error in these captures (#47).
+  // It is also a third, independent statement of the focal length actually in use, in a question
+  // that has had two contradicting ones (#48).
+  //
+  // Empty is a real answer here and must stay distinguishable from absent: this device promises
+  // the neighbouring key and does not deliver it, so promising is not delivering.
+  message LensIntrinsicsSample {
+    int64 time_ns = 1;
+    repeated float intrinsics = 2;   // fx, fy, cx, cy, skew -- same layout as field 25
+  }
+  repeated LensIntrinsicsSample lens_intrinsics_samples = 31;
 }
 
 // Barometer sample. time_ns is the sensor event timestamp, same clock as IMUData.time_ns.
