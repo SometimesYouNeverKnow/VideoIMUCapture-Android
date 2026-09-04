@@ -135,6 +135,28 @@ public final class TestPlan {
                 12, prefs("zoom_ratio", 0.6f, "blur_budget_manual", false,
                         "lock_radiometry", false, "ois", false, "ois_data", false)));
 
+        // O1/O2 are a PAIR, and they exist because the first attempt at the OIS question was
+        // underpowered by its own success. It compared cells B and E, both with the manual
+        // shutter running -- which had already driven blur to about 1 px, leaving the motor
+        // almost nothing to remove. The measured effect was in the right direction (21% less
+        // sensitive to camera rotation) at P = 80%, which is a hint, not an answer.
+        //
+        // AUTO exposure is where OIS has something to do: 16.67 ms shutter, 3-5 px of blur, the
+        // condition the motor was built for. Same route, back to back, one variable.
+        String oisShot = "Walk the same route at the same pace as the other cell, holding the "
+                + "phone UPRIGHT.\n\nShoot O1 and O2 back to back so the light does not move "
+                + "between them.";
+        out.add(new Step("O1", "O1 - OIS off, auto exposure",
+                oisShot + "\n\nOIS off, auto exposure. The control.",
+                30, prefs("ois", false, "ois_data", false, "blur_budget_manual", false,
+                        "lock_radiometry", false)));
+        out.add(new Step("O2", "O2 - OIS ON, auto exposure",
+                oisShot + "\n\nOIS on. This is the one that should look nicer to the eye — and "
+                        + "the question is whether it also measures sharper without costing the "
+                        + "solve anything.",
+                30, prefs("ois", true, "ois_data", true, "blur_budget_manual", false,
+                        "lock_radiometry", false)));
+
         return out;
     }
 
