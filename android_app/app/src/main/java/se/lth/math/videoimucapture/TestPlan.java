@@ -157,6 +157,26 @@ public final class TestPlan {
                 30, prefs("ois", true, "ois_data", true, "blur_budget_manual", false,
                         "lock_radiometry", false)));
 
+        // S1/S2 are a PAIR: does keeping a two-lens stereo pair every second (ReconStab #36)
+        // cost the video anything? While pairs are on, both physical streams sit in the
+        // recording's own repeating request for the whole clip. That is the one thing S2 does
+        // that S1 does not, and the file records everything that could show it: the frame
+        // table (holes), per-frame exposure and ISO (a perturbed AE), frame duration (a rate
+        // the HAL quietly lowered), and thermal. S2 also answers the pair's own questions --
+        // both files present, same stamp on both lenses, the ultrawide wider than the main.
+        String stereoShot = "Walk the same route at the same pace as the other cell, phone "
+                + "UPRIGHT, over ground with texture at one to three metres -- the rock, not "
+                + "the horizon. Shoot S1 and S2 back to back.";
+        out.add(new Step("S1", "S1 - video, no stereo pairs",
+                stereoShot + "\n\nPairs off. The control.",
+                30, prefs("stereo_interval_s", 0, "blur_budget_manual", false,
+                        "lock_radiometry", false, "ois", false, "ois_data", false)));
+        out.add(new Step("S2", "S2 - video, stereo pair every second",
+                stereoShot + "\n\nPairs on at 1 Hz. The readout should show PAIRS counting "
+                        + "up. Against S1 this says what the second sensor costs the video.",
+                30, prefs("stereo_interval_s", 1, "blur_budget_manual", false,
+                        "lock_radiometry", false, "ois", false, "ois_data", false)));
+
         return out;
     }
 

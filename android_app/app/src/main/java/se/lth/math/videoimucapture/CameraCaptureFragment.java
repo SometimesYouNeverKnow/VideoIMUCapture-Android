@@ -526,6 +526,20 @@ public class CameraCaptureFragment extends Fragment
         // the state change is queued, so the GL thread sees them when it builds the encoder.
         android.content.SharedPreferences prefs =
                 androidx.preference.PreferenceManager.getDefaultSharedPreferences(getActivity());
+
+        // Periodic stereo pairs inside the video (ReconStab #36). Opt-in, like the blur budget:
+        // it puts a second sensor into the recording's own request for the whole clip, and what
+        // that does to the video is unmeasured until the S1/S2 cells have been shot.
+        int stereoEvery = prefs.getInt("stereo_interval_s", 0);
+        if (stereoEvery > 0) {
+            StillCaptureManager.CaptureMode cm;
+            switch (modes.getMode()) {
+                case OBJECT: cm = StillCaptureManager.CaptureMode.OBJECT; break;
+                case PANO: cm = StillCaptureManager.CaptureMode.PANO; break;
+                default: cm = StillCaptureManager.CaptureMode.WALK;
+            }
+            camera2Proxy.startPeriodicStereo(stereoEvery * 1000L, dir, recordingWriter, cm);
+        }
         mRenderer.setEncoderPrefs(prefs.getString("video_codec", VideoEncoderCore.DEFAULT_MIME_TYPE),
                 prefs.getInt("video_bitrate_mbps", 0) * 1_000_000);
 
@@ -564,6 +578,8 @@ public class CameraCaptureFragment extends Fragment
         mSmearPx = -1f;
         Camera2Proxy camera2Proxy = getmCamera2Proxy();
         if (camera2Proxy != null) {
+            // Pairs first, while the writer is still open for their last rows.
+            camera2Proxy.stopPeriodicStereo();
             camera2Proxy.stopRecordingCaptureResult();
         }
         CaptureModeManager modes =
@@ -626,13 +642,20 @@ public class CameraCaptureFragment extends Fragment
         // is noise on a line that is already dense; away from 0 it is the reason the frames look
         // the way they do, and it must be visible without opening settings.
         String ev = "";
+        // Periodic pairs (#36): the count, so the operator can see them being taken and a
+        // clip whose count stopped moving is caught on site rather than at the desk.
+        String pairs = "";
         if (act != null && act.getmCamera2Proxy() != null) {
             float stops = act.getmCamera2Proxy().getExposureCompensationStops();
             if (Math.abs(stops) > 0.01f) {
                 ev = String.format(Locale.getDefault(), "EV %+.1f|", stops);
             }
+            if (mRecordingEnabled && act.getmCamera2Proxy().periodicStereoActive()) {
+                pairs = String.format(Locale.getDefault(), "PAIRS %d|",
+                        act.getmCamera2Proxy().periodicStereoPairs());
+            }
         }
-        final String line = "|" + hold + smear + clock + ev + sfl + "|" + sexpotime + "|" + imuHz + "|" + heat;
+        final String line = "|" + hold + smear + clock + pairs + ev + sfl + "|" + sexpotime + "|" + imuHz + "|" + heat;
 
         getActivity().runOnUiThread(() -> {
             if (mCaptureResultText != null) {

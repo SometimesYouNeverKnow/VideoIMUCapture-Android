@@ -164,6 +164,15 @@
             app:summary="Mbit/s. 0 = automatic (about 94 for the full sensor at 30 fps)."/>
 
         <SeekBarPreference
+            app:key="stereo_interval_s"
+            app:title="Stereo pair every (seconds)"
+            app:showSeekBarValue="true"
+            app:min="0"
+            android:max="10"
+            app:defaultValue="0"
+            app:summary="While recording, keep a simultaneous ultrawide + main frame pair at this interval — a known 18 mm baseline every metre of walk, for scale. 0 = off. Runs the second sensor for the whole clip. UNTESTED against the video it rides on: shoot test cells S1 and S2 first."/>
+
+        <SeekBarPreference
             app:key="idle_sleep_s"
             app:title="Camera sleep after"
             app:showSeekBarValue="true"

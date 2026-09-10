@@ -303,6 +303,13 @@ public class Camera2Proxy {
                 || mCaptureSession == null || mPreviewRequestBuilder == null) {
             return;
         }
+        if (mPeriodicStereo) {
+            // The physical streams are already in the repeating request and pairs are being
+            // kept on the interval; a warm-up here would swap the recording's request for a
+            // TEMPLATE_PREVIEW copy of it. The next periodic pair is at most one interval away.
+            Log.i(TAG, "stereo pair requested while periodic pairs run; leaving it to the interval");
+            return;
+        }
         try {
             CaptureRequest.Builder warm =
                     mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
@@ -341,6 +348,117 @@ public class Camera2Proxy {
             }, 2200L);
         } catch (CameraAccessException | IllegalStateException e) {
             Log.e(TAG, "stereo warm-up failed: " + e);
+        }
+    }
+
+    // ------------------------------------------------- periodic stereo pairs (ReconStab #36)
+    //
+    // The mechanism is in StillCaptureManager (see "periodic pairs inside a video" there). This
+    // end owns the REQUEST: while pairs are on, the repeating request carries both physical
+    // streams as targets, so both sensors run and every frame reaches the two readers.
+    //
+    // Per-physical keys need a builder created FOR those physical ids -- setPhysicalCameraKey
+    // on a plain builder throws "Physical camera id: 2 is not valid!", which is how the first
+    // OBJECT pair was lost. The recording's builder is plain, on purpose: a physical-aware
+    // builder for every recording would change the control clips this app is compared
+    // against. So the swap is made here, only while pairs are on: a new builder from the same
+    // template with the ids, every key of the current request copied across, the three targets
+    // added, and the field replaced. Every other path that re-issues mPreviewRequestBuilder
+    // (lock, torch, EV, manual exposure, AE range, focus stack) then carries the streams along
+    // without knowing. Stop does the reverse.
+
+    private boolean mPeriodicStereo = false;
+
+    public boolean stereoSupported() {
+        return mStillCaptureManager != null && mStillCaptureManager.stereoSupported();
+    }
+
+    public boolean periodicStereoActive() {
+        return mPeriodicStereo;
+    }
+
+    public int periodicStereoPairs() {
+        return mStillCaptureManager != null ? mStillCaptureManager.periodicPairCount() : 0;
+    }
+
+    /**
+     * Put both physical streams into the repeating request and start keeping a pair every
+     * intervalMs. Safe to call when unsupported: it logs and does nothing.
+     */
+    public void startPeriodicStereo(long intervalMs, File outputDir, RecordingWriter writer,
+                                    StillCaptureManager.CaptureMode mode) {
+        if (Build.VERSION.SDK_INT < 28 || !stereoSupported() || mCaptureSession == null
+                || mPreviewRequestBuilder == null || mCameraDevice == null) {
+            Log.w(TAG, "periodic stereo unavailable (session or lens pair missing)");
+            return;
+        }
+        if (mPeriodicStereo) {
+            return;
+        }
+        try {
+            CaptureRequest.Builder b = mCameraDevice.createCaptureRequest(
+                    CameraDevice.TEMPLATE_RECORD, StillCaptureManager.stereoPhysicalIds());
+            copyAllKeys(mPreviewRequestBuilder.build(), b);
+            b.addTarget(mPreviewSurface);
+            for (Surface s : mStillCaptureManager.getStereoSurfaces().values()) {
+                b.addTarget(s);
+            }
+            mStillCaptureManager.applyPhysicalFullArrays(b);
+            mPreviewRequestBuilder = b;
+            mCaptureSession.setRepeatingRequest(
+                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+            mStillCaptureManager.startPeriodicStereo(intervalMs * 1_000_000L, outputDir,
+                    writer, mode);
+            mPeriodicStereo = true;
+            Log.i(TAG, "periodic stereo: physical streams added to the repeating request, "
+                    + intervalMs + " ms interval");
+        } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
+            Log.e(TAG, "periodic stereo could not start: " + e);
+        }
+    }
+
+    /** Take the physical streams back out of the repeating request. */
+    public void stopPeriodicStereo() {
+        if (!mPeriodicStereo) {
+            return;
+        }
+        mPeriodicStereo = false;
+        if (mStillCaptureManager != null) {
+            mStillCaptureManager.stopPeriodicStereo();
+        }
+        if (mCaptureSession == null || mPreviewRequestBuilder == null || mCameraDevice == null) {
+            return;
+        }
+        try {
+            CaptureRequest.Builder b =
+                    mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+            copyAllKeys(mPreviewRequestBuilder.build(), b);
+            b.addTarget(mPreviewSurface);
+            mPreviewRequestBuilder = b;
+            mCaptureSession.setRepeatingRequest(
+                    mPreviewRequestBuilder.build(), mSessionCaptureCallback, mBackgroundHandler);
+            Log.i(TAG, "periodic stereo: physical streams removed, preview request restored");
+        } catch (CameraAccessException | IllegalStateException | IllegalArgumentException e) {
+            Log.w(TAG, "periodic stereo: could not restore the plain request: " + e);
+        }
+    }
+
+    /** Every key the built request carries, onto another builder. Targets are not keys. */
+    private static void copyAllKeys(CaptureRequest from, CaptureRequest.Builder to) {
+        for (CaptureRequest.Key<?> key : from.getKeys()) {
+            copyKey(from, to, key);
+        }
+    }
+
+    private static <T> void copyKey(CaptureRequest from, CaptureRequest.Builder to,
+                                    CaptureRequest.Key<T> key) {
+        T v = from.get(key);
+        if (v != null) {
+            try {
+                to.set(key, v);
+            } catch (IllegalArgumentException e) {
+                Log.w(TAG, "key " + key.getName() + " not copied: " + e);
+            }
         }
     }
 
@@ -809,6 +927,11 @@ public class Camera2Proxy {
 
     public void releaseCamera() {
         Log.v(TAG, "releaseCamera");
+        // The session is going away with it; no request to restore, just the bookkeeping.
+        mPeriodicStereo = false;
+        if (mStillCaptureManager != null) {
+            mStillCaptureManager.stopPeriodicStereo();
+        }
         stopRecordingCaptureResult();
         if (null != mCaptureSession) {
             mCaptureSession.close();
@@ -954,6 +1077,12 @@ public class Camera2Proxy {
 
                     // Keep the latest metered result: a bracket steps away from this.
                     mLastResult = result;
+
+                    // Periodic stereo pairs (#36) arm on this clock and match their rows
+                    // from these results. A no-op when the feature is off.
+                    if (mStillCaptureManager != null) {
+                        mStillCaptureManager.onRepeatingResult(result);
+                    }
 
                     // A focus stack step may be waiting on the lens to arrive. Checked
                     // before anything else touches AF state, and cheap when idle.
