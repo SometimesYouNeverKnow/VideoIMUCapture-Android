@@ -13,9 +13,40 @@
         <VideoView
             android:id="@+id/session_video"
             android:layout_width="match_parent"
-            android:layout_height="300dp"
+            android:layout_height="360dp"
             android:layout_gravity="center_horizontal"
             android:background="#000000" />
+
+        <LinearLayout
+            android:id="@+id/session_controls"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <Button
+                android:id="@+id/session_play"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="88dp"
+                android:text="▶ Play" />
+
+            <SeekBar
+                android:id="@+id/session_seek"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1" />
+
+            <TextView
+                android:id="@+id/session_time"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="88dp"
+                android:gravity="end"
+                android:fontFamily="monospace"
+                android:textSize="12sp"
+                android:text="0:00 / 0:00" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/session_summary"

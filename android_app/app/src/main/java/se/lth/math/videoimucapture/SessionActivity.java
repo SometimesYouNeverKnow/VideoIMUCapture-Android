@@ -10,7 +10,7 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.widget.Button;
 import android.widget.ImageView;
-import android.widget.MediaController;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.VideoView;
@@ -69,22 +69,12 @@ public class SessionActivity extends AppCompatActivity {
                 + mSession.countsText() + " · " + mSession.sizeText());
         mStreams.setText("reading streams…");
 
+        View controls = findViewById(R.id.session_controls);
         if (mSession.video != null && mSession.videoMs > 0) {
-            MediaController mc = new MediaController(this);
-            mc.setAnchorView(mVideo);
-            mVideo.setMediaController(mc);
-            mVideo.setVideoPath(mSession.video.getAbsolutePath());
-            mVideo.setOnPreparedListener(mp -> {
-                mp.setLooping(false);
-                mVideo.seekTo(1);
-            });
-            mVideo.setOnErrorListener((mp, what, extra) -> {
-                Toast.makeText(this, "video will not play (" + what + "/" + extra + ")",
-                        Toast.LENGTH_LONG).show();
-                return true;
-            });
+            setUpPlayer(controls);
         } else {
             mVideo.setVisibility(View.GONE);
+            controls.setVisibility(View.GONE);
         }
 
         if (mSession.stills.isEmpty()) {
@@ -102,11 +92,131 @@ public class SessionActivity extends AppCompatActivity {
         });
     }
 
+    // ------------------------------------------------------------------------ the player
+    //
+    // Our own transport, not MediaController. The stock controller is a pop-up that appears on
+    // a tap, hides itself after three seconds and anchors to the video's window position --
+    // inside a scrolling page that is a control you cannot find, which is what "the player is
+    // not working" looked like on the first try. A button that says Play, a bar you can drag,
+    // and the time, all of them always on screen.
+
+    private Button mPlay;
+    private SeekBar mSeek;
+    private TextView mTime;
+    private final android.os.Handler mTick = new android.os.Handler(android.os.Looper.getMainLooper());
+    private boolean mPrepared = false;
+    private final Runnable mTickRun = new Runnable() {
+        @Override
+        public void run() {
+            if (mPrepared && mVideo != null) {
+                int pos = mVideo.getCurrentPosition();
+                if (!mSeekHeld) {
+                    mSeek.setProgress(pos);
+                }
+                mTime.setText(clock(pos) + " / " + clock(mVideo.getDuration())
+                        + (mVideo.isPlaying() && !mRendered ? " (no frame drawn)" : ""));
+                mPlay.setText(mVideo.isPlaying() ? "❚❚ Pause" : "▶ Play");
+            }
+            mTick.postDelayed(this, 250L);
+        }
+    };
+    private boolean mSeekHeld = false;
+    private volatile boolean mRendered = false;
+
+    private void setUpPlayer(View controls) {
+        mPlay = findViewById(R.id.session_play);
+        mSeek = findViewById(R.id.session_seek);
+        mTime = findViewById(R.id.session_time);
+        mPlay.setEnabled(false);
+        mVideo.setVideoPath(mSession.video.getAbsolutePath());
+        mVideo.setOnPreparedListener(mp -> {
+            mPrepared = true;
+            mp.setLooping(false);
+            // Fit the view to the clip: a portrait 3060x4080 in a landscape box is a thin strip.
+            int vw = mp.getVideoWidth(), vh = mp.getVideoHeight();
+            if (vw > 0 && vh > 0) {
+                int w = mVideo.getWidth() > 0 ? mVideo.getWidth()
+                        : getResources().getDisplayMetrics().widthPixels;
+                int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.55f);
+                int h = Math.min(maxH, (int) ((long) w * vh / vw));
+                mVideo.getLayoutParams().height = h;
+                mVideo.requestLayout();
+            }
+            mSeek.setMax(mVideo.getDuration());
+            mVideo.seekTo(1);
+            mPlay.setEnabled(true);
+            mTime.setText("0:00 / " + clock(mVideo.getDuration()));
+        });
+        mVideo.setOnCompletionListener(mp -> mPlay.setText("▶ Play"));
+        // Decoding and drawing are different events, and "black" needs to say which one it is:
+        // the log of the first try showed every clip prepared and started, so if the screen
+        // stayed black the frame never reached the surface. This flag is the drawn half.
+        mVideo.setOnInfoListener((mp, what, extra) -> {
+            if (what == android.media.MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
+                mRendered = true;
+            }
+            return false;
+        });
+        mVideo.setOnErrorListener((mp, what, extra) -> {
+            mTime.setText("cannot play (" + what + "/" + extra + ")");
+            Toast.makeText(this, "video will not play (" + what + "/" + extra + ")",
+                    Toast.LENGTH_LONG).show();
+            return true;
+        });
+        mPlay.setOnClickListener(v -> {
+            if (!mPrepared) {
+                return;
+            }
+            if (mVideo.isPlaying()) {
+                mVideo.pause();
+                mPlay.setText("▶ Play");
+            } else {
+                mVideo.start();
+                mPlay.setText("❚❚ Pause");
+            }
+        });
+        mVideo.setOnClickListener(v -> mPlay.performClick());
+        mSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
+                if (fromUser && mPrepared) {
+                    mVideo.seekTo(progress);
+                    mTime.setText(clock(progress) + " / " + clock(mVideo.getDuration()));
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar s) {
+                mSeekHeld = true;
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar s) {
+                mSeekHeld = false;
+            }
+        });
+        mTick.post(mTickRun);
+    }
+
+    private static String clock(int ms) {
+        int s = Math.max(0, ms / 1000);
+        return String.format(Locale.US, "%d:%02d", s / 60, s % 60);
+    }
+
     @Override
     protected void onPause() {
         super.onPause();
         if (mVideo != null && mVideo.isPlaying()) {
             mVideo.pause();
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        mTick.removeCallbacks(mTickRun);
+        if (mVideo != null) {
+            mVideo.stopPlayback();
         }
     }
 

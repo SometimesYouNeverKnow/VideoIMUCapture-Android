@@ -170,7 +170,7 @@
             app:min="0"
             android:max="10"
             app:defaultValue="0"
-            app:summary="While recording, keep a simultaneous ultrawide + main frame pair at this interval — a known 18 mm baseline every metre of walk, for scale. 0 = off. Runs the second sensor for the whole clip. UNTESTED against the video it rides on: shoot test cells S1 and S2 first."/>
+            app:summary="While recording, keep a simultaneous ultrawide + main frame pair at this interval — a known 18 mm baseline every metre of walk, for scale. 0 = off. Runs the second sensor for the whole clip. Measured 2026-09-10 in a dark room: pairs land and are the same frame on both lenses; the video kept its frame count but its cadence roughened (the sensor held 30 fps and every other frame was encoded). Daylight unmeasured — shoot S1 and S2 there before a real walk."/>
 
         <SeekBarPreference
             app:key="idle_sleep_s"
