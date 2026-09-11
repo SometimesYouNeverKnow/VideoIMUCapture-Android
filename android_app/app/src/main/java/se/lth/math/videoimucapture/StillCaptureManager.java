@@ -538,18 +538,10 @@ public class StillCaptureManager {
             imageTs = image.getTimestamp();
             if (mPeriodicActive) {
                 periodic = true;
-                // DIAGNOSTIC (2026-09-10): the grids. Every image stamp within 300 ms after a
-                // target, on both lenses, against the target itself.
-                if (imageTs >= mPeriodicTargetTs && imageTs < mPeriodicTargetTs + 300_000_000L) {
-                    Log.i(TAG, "grid " + tag + " imageTs=" + imageTs + " target="
-                            + mPeriodicTargetTs + " (+" + (imageTs - mPeriodicTargetTs) / 1_000_000
-                            + " ms)");
-                }
                 if (!periodicKeep(physicalId, imageTs)) {
                     return;
                 }
                 burstId = mPeriodicBurstId;
-                Log.i(TAG, "kept " + tag + " imageTs=" + imageTs);
             } else {
                 periodic = false;
                 boolean armed = PHYS_ULTRAWIDE.equals(physicalId)
@@ -661,15 +653,19 @@ public class StillCaptureManager {
                 per = pr;
             }
         }
+        // THE STAMP IS THE IMAGE'S, when there is one. Measured on the S2 cell of 2026-09-10:
+        // both lenses' images carry the IDENTICAL stamp, equal to the logical result's, so a kept
+        // pair is one sensor period on both -- but the ultrawide's per-physical result reports a
+        // SENSOR_TIMESTAMP 180-240 ms away on a grid of exactly 1.000 s, another clock entirely.
+        // The first S2 wrote that value and every one of its 30 pairs failed the 5 ms pairing
+        // tolerance downstream. The image stamp is also the frame table's stamp, which is what
+        // lets a pair join the video's own frame without a lookup. Exposure and ISO still come
+        // from the per-physical result: the two sensors really are exposed differently.
         Long ts = per.get(CaptureResult.SENSOR_TIMESTAMP);
-        if (ts != null) {
-            b.setTimeNs(ts);
-        } else if (imageTs != 0L) {
-            b.setTimeNs(imageTs);
-        }
         if (imageTs != 0L) {
-            Log.i(TAG, "row " + tag + " logicalTs=" + result.get(CaptureResult.SENSOR_TIMESTAMP)
-                    + " physTs=" + ts + " imageTs=" + imageTs + " perIsPhysical=" + (per != result));
+            b.setTimeNs(imageTs);
+        } else if (ts != null) {
+            b.setTimeNs(ts);
         }
         Long exp = per.get(CaptureResult.SENSOR_EXPOSURE_TIME);
         if (exp != null) {
