@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="3dp"
+    android:background="?android:attr/selectableItemBackground">
+
+    <ImageView
+        android:id="@+id/still_image"
+        android:layout_width="144dp"
+        android:layout_height="108dp"
+        android:scaleType="centerCrop"
+        android:background="#22000000"
+        android:contentDescription="still" />
+
+    <TextView
+        android:id="@+id/still_label"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:textSize="11sp" />
+</LinearLayout>

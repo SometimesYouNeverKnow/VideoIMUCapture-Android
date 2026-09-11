@@ -192,7 +192,11 @@ public class StillCaptureManager {
         mStereoMainReader.setOnImageAvailableListener(
                 r -> onStereoImage(r, PHYS_MAIN, "main"), mHandler);
         mStereoSupported = true;
-        Log.d(TAG, "stereo pair ready at " + STEREO_SIZE);
+        Integer sync = Build.VERSION.SDK_INT >= 28
+                ? mCharacteristics.get(CameraCharacteristics.LOGICAL_MULTI_CAMERA_SENSOR_SYNC_TYPE)
+                : null;
+        Log.d(TAG, "stereo pair ready at " + STEREO_SIZE + "; sensor sync type "
+                + sync + " (0 approximate, 1 calibrated)");
     }
 
     public boolean stereoSupported() {
@@ -534,10 +538,18 @@ public class StillCaptureManager {
             imageTs = image.getTimestamp();
             if (mPeriodicActive) {
                 periodic = true;
+                // DIAGNOSTIC (2026-09-10): the grids. Every image stamp within 300 ms after a
+                // target, on both lenses, against the target itself.
+                if (imageTs >= mPeriodicTargetTs && imageTs < mPeriodicTargetTs + 300_000_000L) {
+                    Log.i(TAG, "grid " + tag + " imageTs=" + imageTs + " target="
+                            + mPeriodicTargetTs + " (+" + (imageTs - mPeriodicTargetTs) / 1_000_000
+                            + " ms)");
+                }
                 if (!periodicKeep(physicalId, imageTs)) {
                     return;
                 }
                 burstId = mPeriodicBurstId;
+                Log.i(TAG, "kept " + tag + " imageTs=" + imageTs);
             } else {
                 periodic = false;
                 boolean armed = PHYS_ULTRAWIDE.equals(physicalId)
@@ -654,6 +666,10 @@ public class StillCaptureManager {
             b.setTimeNs(ts);
         } else if (imageTs != 0L) {
             b.setTimeNs(imageTs);
+        }
+        if (imageTs != 0L) {
+            Log.i(TAG, "row " + tag + " logicalTs=" + result.get(CaptureResult.SENSOR_TIMESTAMP)
+                    + " physTs=" + ts + " imageTs=" + imageTs + " perIsPhysical=" + (per != result));
         }
         Long exp = per.get(CaptureResult.SENSOR_EXPOSURE_TIME);
         if (exp != null) {

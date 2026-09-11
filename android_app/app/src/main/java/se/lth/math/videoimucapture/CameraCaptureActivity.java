@@ -494,6 +494,16 @@ public class CameraCaptureActivity extends AppCompatActivity {
                 .commit();
     }
 
+    /** The film roll (ReconStab #15): every session on the phone, grouped by mode. */
+    public void showRoll(@SuppressWarnings("unused") MenuItem unused) {
+        if (mCaptureModeManager != null && mCaptureModeManager.isRunning()) {
+            android.widget.Toast.makeText(this, "stop the run first", android.widget.Toast.LENGTH_SHORT)
+                    .show();
+            return;
+        }
+        startActivity(new android.content.Intent(this, RollActivity.class));
+    }
+
     public void displayInfo(MenuItem unused) {
         Bundle args = new Bundle();
         args.putInt("title", R.string.info_dialog_title);

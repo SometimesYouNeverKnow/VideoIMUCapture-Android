@@ -8,6 +8,7 @@
     <string name="settings_page_title">Settings</string>
     <string name="settings_toolbar">Settings</string>
     <string name="tests_toolbar">TESTS</string>
+    <string name="roll_toolbar">ROLL</string>
     <string name="back_toolbar">Back</string>
 
     <string name="record_description">Toggle video recording</string>

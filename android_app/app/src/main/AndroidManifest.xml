@@ -31,6 +31,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".RollActivity"
+            android:exported="false"
+            android:label="@string/roll_toolbar"
+            android:parentActivityName=".CameraCaptureActivity" />
+        <activity
+            android:name=".SessionActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize"
+            android:parentActivityName=".RollActivity" />
     </application>
 
 </manifest>
