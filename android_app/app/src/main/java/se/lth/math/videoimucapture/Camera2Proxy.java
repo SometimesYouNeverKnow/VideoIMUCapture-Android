@@ -301,9 +301,56 @@ public class Camera2Proxy {
         mStereoRequests.stopPeriodic();
     }
 
+    // FRAME 0 WAS EXPOSED BEFORE THE PRESS. The pipeline is a few frames deep, so the first
+    // frame the encoder numbers left the sensor before the record button's press reached this
+    // class -- and its result row was written or not depending on which side of
+    // mRecordingMetadata the result happened to arrive. About half of all clips lost it (fork
+    // issue #3: time_dropped_unmatched = 1, the first row is frame 1), which is cosmetic for a
+    // join by timestamp and an off-by-one from the first frame for a join by position.
+    //
+    // So the last few results are kept while NOT recording, and handed to the writer when
+    // recording starts. Frame 0's is among them; the ones older than it are discarded by
+    // FramePairing as pre-roll and are not counted as losses. References only -- no row is
+    // built while idle, so the preview costs what it did.
+    private static final int PRE_ROLL_RESULTS = 12;     // 400 ms at 30 fps
+    private final TotalCaptureResult[] mPreRollResults = new TotalCaptureResult[PRE_ROLL_RESULTS];
+    private final Float[] mPreRollFocal = new Float[PRE_ROLL_RESULTS];
+    private int mPreRollNext = 0;       // camera thread only
+
+    /** Camera thread. Remember a result that arrived while nothing was recording. */
+    private void rememberForPreRoll(TotalCaptureResult result, Float focalLengthPix) {
+        mPreRollResults[mPreRollNext] = result;
+        mPreRollFocal[mPreRollNext] = focalLengthPix;
+        mPreRollNext = (mPreRollNext + 1) % PRE_ROLL_RESULTS;
+    }
+
+    /**
+     * Camera thread. Write the remembered results, oldest first, then start recording live
+     * ones -- on this thread, so that a live result cannot land in the file between two
+     * remembered ones: FramePairing drops whatever is older than the row it has reached.
+     */
+    private void beginFrameRows() {
+        for (int k = 0; k < PRE_ROLL_RESULTS; k++) {
+            int i = (mPreRollNext + k) % PRE_ROLL_RESULTS;
+            TotalCaptureResult r = mPreRollResults[i];
+            if (r != null && r.get(CaptureResult.SENSOR_TIMESTAMP) != null) {
+                mRecordingWriter.queueData(FrameRecords.frame(r, mPreRollFocal[i],
+                        mFocalLengthHelper));
+            }
+            mPreRollResults[i] = null;
+            mPreRollFocal[i] = null;
+        }
+        mRecordingMetadata = true;
+    }
+
     public void startRecordingCaptureResult(RecordingWriter recordingWriter) {
         mRecordingWriter = recordingWriter;
-        mRecordingMetadata = true;
+        Handler camera = mBackgroundHandler;
+        if (camera != null) {
+            camera.post(this::beginFrameRows);
+        } else {
+            mRecordingMetadata = true;
+        }
         // NO unconditional lock here. This used to call setAutoAlgorithmLock(true) outright --
         // upstream's behaviour, from before the choice existed -- which silently overruled the
         // "Freeze exposure while recording" setting v0.14 added. CaptureModeManager reads the
@@ -1060,6 +1107,8 @@ public class Camera2Proxy {
                         // (lens_intrinsic_calibration), so both provenances survive in the file.
                         mRecordingWriter.queueData(
                                 FrameRecords.frame(result, focal_length_pix, mFocalLengthHelper));
+                    } else {
+                        rememberForPreRoll(result, focal_length_pix);
                     }
                     // The readout shows the number the app actually computes smear from -- the
                     // HAL's per-frame fx where it exists. Showing the derived estimate instead

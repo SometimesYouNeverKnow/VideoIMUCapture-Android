@@ -27,12 +27,10 @@ import se.lth.math.videoimucapture.RecordingProtos.VideoFrameToTimestamp;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.Locale;
-import java.util.Queue;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 
-import static java.lang.Math.abs;
 
 public class RecordingWriter implements Runnable{
     final private static String TAG = "RecordingWriter";
@@ -46,31 +44,10 @@ public class RecordingWriter implements Runnable{
     //Empty message as poison pill
     private final MessageWrapper mPoisonPill = MessageWrapper.newBuilder().build();
 
-    // Queues to handle merging of video frames. tryVideoDataMerge() can only drain these in
-    // PAIRS, so if one side is produced faster than the other for any sustained period the
-    // faster queue fills and never empties. That is not hypothetical: a camera running at a
-    // higher rate than the encoder does it in seconds, and so does an encoder stalling under
-    // thermal load on a long capture. add() throws IllegalStateException when full, which on
-    // this thread is fatal to the whole app and takes the clip with it, so these are filled
-    // through offerDropOldest() instead: an unmatchable frame is dropped, and counted.
-    private Queue<VideoFrameMetaData> mFrameDataQueue = new ArrayBlockingQueue<>(100);
-    private Queue<VideoFrameToTimestamp> mFrameTimeQueue = new ArrayBlockingQueue<>(100);
-    private int mFrameMetaDropped = 0;
-    private int mFrameTimeDropped = 0;
-
-    // The OTHER way a frame record disappears, and the one that had no counter: the merge
-    // discards a message that has no partner within the 10 us window. That is not a full
-    // queue and not an error -- it is the normal outcome when the two streams drift -- and
-    // it left the August jetty file with 9,457 records against 9,462 encoded frames. Five
-    // holes, no complaint, and the images were being joined to the records BY LIST POSITION
-    // downstream, which is how the wrong focal length was measured (#48). A hole that is not
-    // counted is a hole that shifts every record after it by one.
-    //
-    // Written on the writer thread, read from the UI thread when the session is sealed, so
-    // they are volatile: a stale count in the manifest would be a lie in the receipt.
-    private volatile int mFrameMetaMergeDropped = 0;
-    private volatile int mFrameTimeMergeDropped = 0;
-    private volatile int mFrameMetaWritten = 0;
+    // The two halves of a frame record are paired, and their losses counted, in FramePairing.
+    private final FramePairing mFrames = new FramePairing();
+    private final FramePairing.Sink mFrameSink = merged ->
+            VideoCaptureData.newBuilder().addVideoMeta(merged).build().writeTo(mFileStream);
 
     /**
      * What happened to the frame records, snapshotted when the session is sealed. This is
@@ -104,8 +81,9 @@ public class RecordingWriter implements Runnable{
 
     /** A snapshot of the frame accounting, safe to take from any thread. */
     public FrameAccounting accounting() {
-        return new FrameAccounting(mFrameMetaWritten, mFrameMetaDropped, mFrameMetaMergeDropped,
-                mFrameTimeDropped, mFrameTimeMergeDropped);
+        return new FrameAccounting(mFrames.written(), mFrames.metaDroppedQueue(),
+                mFrames.metaDroppedMerge(), mFrames.timeDroppedQueue(),
+                mFrames.timeDroppedMerge());
     }
 
     /**
@@ -131,7 +109,8 @@ public class RecordingWriter implements Runnable{
                     a.totalDropped(), a.metaWritten, a.metaDroppedQueue, a.timeDroppedQueue,
                     a.metaDroppedMerge, a.timeDroppedMerge));
         } else {
-            Log.i(TAG, "sealing complete: " + a.metaWritten + " frame records, none lost");
+            Log.i(TAG, "sealing complete: " + a.metaWritten + " frame records, none lost ("
+                    + mFrames.metaPreRoll() + " pre-roll results from before frame 0 discarded)");
         }
     }
 
@@ -147,14 +126,8 @@ public class RecordingWriter implements Runnable{
 
         //Reset state
         mIsRecording = true;
-        mFrameDataQueue.clear();
-        mFrameTimeQueue.clear();
+        mFrames.reset();
         mQueue.clear();
-        mFrameMetaDropped = 0;
-        mFrameTimeDropped = 0;
-        mFrameMetaMergeDropped = 0;
-        mFrameTimeMergeDropped = 0;
-        mFrameMetaWritten = 0;
 
         //Start background thread
         Thread myThread = new Thread(this, "RecordingWriter");
@@ -189,7 +162,6 @@ public class RecordingWriter implements Runnable{
             Log.d(TAG, "Interrupted in close.");
         }
     }
-
 
     public void run() {
         Log.d(TAG, String.format("Looping on %s thread", Thread.currentThread()));
@@ -272,21 +244,11 @@ public class RecordingWriter implements Runnable{
         switch (msgCase) {
             case FRAME_META:
                 if (VERBOSE) Log.d(TAG,"Got Frame Meta");
-                if (!mFrameDataQueue.offer(msg.getFrameMeta())) {
-                    mFrameDataQueue.poll();                     // oldest will never find a partner
-                    mFrameDataQueue.offer(msg.getFrameMeta());
-                    countDrop(true);
-                }
-                tryVideoDataMerge();
+                mFrames.offerMeta(msg.getFrameMeta(), mFrameSink);
                 break;
             case FRAME_TIME:
                 if (VERBOSE) Log.d(TAG,"Got Frame Time");
-                if (!mFrameTimeQueue.offer(msg.getFrameTime())) {
-                    mFrameTimeQueue.poll();
-                    mFrameTimeQueue.offer(msg.getFrameTime());
-                    countDrop(false);
-                }
-                tryVideoDataMerge();
+                mFrames.offerTime(msg.getFrameTime(), mFrameSink);
                 break;
             case IMU_DATA:
                 if (VERBOSE) Log.d(TAG,"Got IMU data");
@@ -361,61 +323,11 @@ public class RecordingWriter implements Runnable{
         }
     }
 
-
     /**
      * A dropped frame record is a hole in the file, so say so. Loudly on the first one —
      * that is the moment the two streams came apart and the reason is still in the log
      * above it — then every 100th, so a sustained mismatch does not bury the log.
      */
-    private void countDrop(boolean meta) {
-        int n = meta ? ++mFrameMetaDropped : ++mFrameTimeDropped;
-        if (n == 1 || n % 100 == 0) {
-            Log.w(TAG, String.format(
-                    "frame %s queue full, dropped oldest (%d so far; meta=%d time=%d queued). "
-                            + "The camera and the encoder are running at different rates.",
-                    meta ? "meta" : "time", n, mFrameDataQueue.size(), mFrameTimeQueue.size()));
-        }
-    }
-
-    private void tryVideoDataMerge() throws IOException {
-        if (VERBOSE)  Log.d(TAG, String.format("Trying to merge, Queue lengths: %d,%d", mFrameDataQueue.size(), mFrameTimeQueue.size()));
-
-        // Peek at oldest frame time message
-        VideoFrameToTimestamp frameTimeMsg = mFrameTimeQueue.peek();
-        VideoFrameMetaData frameMetaMsg = mFrameDataQueue.peek();
-
-        //Try to find frames to match
-        while ((frameTimeMsg != null) && (frameMetaMsg != null)) {
-            long timeDiffNs = (1000*frameTimeMsg.getTimeUs() - frameMetaMsg.getTimeNs());
-            if (VERBOSE) Log.d(TAG, String.format("Time diff: %d ns", timeDiffNs));
-
-            if (abs(timeDiffNs) <= 10000) {
-                // They are from the same capture frame
-                VideoFrameMetaData.Builder frameBuilder = VideoFrameMetaData.newBuilder().mergeFrom(frameMetaMsg)
-                        .setFrameNumber(frameTimeMsg.getFrameNbr());
-                VideoCaptureData.newBuilder().addVideoMeta(frameBuilder).build().writeTo(mFileStream);
-                mFrameMetaWritten++;
-                // Remove frames from queue
-                mFrameTimeQueue.poll();
-                mFrameDataQueue.poll();
-                //We are done
-                break;
-            } else if (timeDiffNs > 0) {
-                //Meta message is too old, try another one
-                mFrameDataQueue.poll(); // throw old
-                frameMetaMsg = mFrameDataQueue.peek();
-                mFrameMetaMergeDropped++;
-                Log.d(TAG, "Diff too large, skipping frame meta data");
-            } else {
-                // Frame Time message too old, try another one
-                mFrameTimeQueue.poll(); // throw old
-                frameTimeMsg = mFrameTimeQueue.peek();
-                mFrameTimeMergeDropped++;
-                Log.d(TAG, "Diff too large, skipping frame time data");
-            }
-        }
-
-    }
 
     private void queueData(MessageWrapper msg) {
         if (!isRecording()) {
