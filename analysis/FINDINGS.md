@@ -249,10 +249,16 @@ And one the receipt did not catch: the 18:53 L1 said `agrees: true` while logcat
 - **G1/G2** (target + tape, 1 m then 2 m): first baseline numbers for the 3x and 5x, and the
   5x's FOV. **H1/H2, I1/I2, O1/O2** need a walk. None is drivable from a still phone.
 - **Periodic pairs** still carry the zoom-1.0 crop with nothing in the row to say so.
-- **Lost frame records** (issue #3): the counter and the positions are known (2026-09-21 §3).
-  Not fixed: the start-edge loss of frame 0 -- one clip of four on the final builds, located
-  at frame 0 with no hole inside (`M3g1`). Rows are presumably still lost at any OTHER swap
-  of the repeating request under a recording (torch, a blur-budget exposure hold); unmeasured.
+- **Lost frame records** (issue #3): both causes fixed. The start-edge loss of frame 0 in
+  `1102d89`: the last twelve results from before the press are handed to the writer, and
+  `FramePairing` counts the ones older than encoder frame 0 as pre-roll rather than as losses.
+  Eight clips on that build (M2 x3, W1 x2, M4 x2, M3; sessions `F0_1`..`F0_8`): every one
+  starts at frame 0, no holes, `complete: true`. Against a prior rate of about eight clips in
+  seventeen, eight clean by chance is under 1%. In seven the encoder's frame 0 was exposed
+  after the press and all twelve remembered results were discarded; in one (M3) eleven were,
+  because the twelfth WAS frame 0's -- the case the old code lost. Still unmeasured: rows at
+  any other swap of the repeating request under a recording (torch, a blur-budget exposure
+  hold).
 - **W on the ultrawide** needs a proper scene (above).
 - **Downstream**: the crop finding is written up on ReconStab #6 and the N1/N2 numbers on
   ReconStab #55 (2026-09-21). Still owed there: N1/N2 scored by the matcher on a real route,
