@@ -7,6 +7,8 @@ import android.media.MediaMetadataRetriever;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+
+import androidx.annotation.Nullable;
 import android.util.LruCache;
 import android.widget.ImageView;
 
@@ -66,6 +68,20 @@ public final class Thumbs {
                 }
             });
         });
+    }
+
+    /**
+     * The cached thumbnail file for a source, made if it is missing or stale. For callers
+     * that need a file rather than a view -- the roll provider hands it to another app.
+     * Runs the decode on the calling thread; do not call from the UI thread.
+     */
+    @Nullable
+    public File cachedFile(File source, String key) {
+        File cached = new File(cacheDir, key.replace('/', '_') + ".jpg");
+        if (cached.isFile() && cached.lastModified() >= source.lastModified()) {
+            return cached;
+        }
+        return load(source, key) != null && cached.isFile() ? cached : null;
     }
 
     private Bitmap load(File source, String key) {
