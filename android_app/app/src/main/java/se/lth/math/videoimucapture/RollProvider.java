@@ -29,6 +29,7 @@ import java.util.List;
  * <pre>
  *   content://se.lth.math.videoimucapture.roll/sessions                       query: one row per session
  *   content://se.lth.math.videoimucapture.roll/sessions/{name}/thumb          openFile: JPEG
+ *   content://se.lth.math.videoimucapture.roll/sessions/{name}/files          query: one row per file
  *   content://se.lth.math.videoimucapture.roll/sessions/{name}/files/{file}   openFile: read-only
  * </pre>
  *
@@ -51,6 +52,10 @@ public final class RollProvider extends ContentProvider {
     public static final String COL_HAS_META = "has_meta";
     public static final String COL_WARNING = "warning";
 
+    public static final String COL_FILE_NAME = "name";
+    public static final String COL_FILE_BYTES = "bytes";
+    static final String[] FILE_COLUMNS = {COL_FILE_NAME, COL_FILE_BYTES};
+
     static final String[] COLUMNS = {
             COL_NAME, COL_MODE, COL_KIND, COL_WHEN, COL_BYTES, COL_VIDEO_MS, COL_STILLS,
             COL_STEREO_PAIRS, COL_DNGS, COL_HAS_VIDEO, COL_HAS_META, COL_WARNING,
@@ -59,11 +64,13 @@ public final class RollProvider extends ContentProvider {
     private static final int SESSIONS = 1;
     private static final int THUMB = 2;
     private static final int FILE = 3;
+    private static final int FILES = 4;
     private static final UriMatcher MATCHER = new UriMatcher(UriMatcher.NO_MATCH);
 
     static {
         MATCHER.addURI(AUTHORITY, "sessions", SESSIONS);
         MATCHER.addURI(AUTHORITY, "sessions/*/thumb", THUMB);
+        MATCHER.addURI(AUTHORITY, "sessions/*/files", FILES);
         MATCHER.addURI(AUTHORITY, "sessions/*/files/*", FILE);
     }
 
@@ -94,7 +101,11 @@ public final class RollProvider extends ContentProvider {
     @Override
     public Cursor query(@NonNull Uri uri, @Nullable String[] projection, @Nullable String selection,
                         @Nullable String[] selectionArgs, @Nullable String sortOrder) {
-        if (MATCHER.match(uri) != SESSIONS) {
+        int match = MATCHER.match(uri);
+        if (match == FILES) {
+            return queryFiles(uri.getPathSegments().get(1));
+        }
+        if (match != SESSIONS) {
             throw new IllegalArgumentException("Unknown URI " + uri);
         }
         File[] dirs = root().listFiles(File::isDirectory);
@@ -115,6 +126,26 @@ public final class RollProvider extends ContentProvider {
             });
         }
         cursor.setNotificationUri(getContext().getContentResolver(), uri);
+        return cursor;
+    }
+
+    /**
+     * The plain files of one session, the same set {@code files/{file}} will open:
+     * what an uploader must send so the far end holds the whole session.
+     */
+    private Cursor queryFiles(String sessionName) {
+        File dir = sessionDir(sessionName);
+        if (dir == null) {
+            throw new IllegalArgumentException("No such session");
+        }
+        File[] files = dir.listFiles(f -> f.isFile() && !f.getName().startsWith("."));
+        MatrixCursor cursor = new MatrixCursor(FILE_COLUMNS, files == null ? 0 : files.length);
+        if (files != null) {
+            java.util.Arrays.sort(files, (a, b) -> a.getName().compareTo(b.getName()));
+            for (File f : files) {
+                cursor.addRow(new Object[]{f.getName(), f.length()});
+            }
+        }
         return cursor;
     }
 
@@ -166,6 +197,8 @@ public final class RollProvider extends ContentProvider {
         switch (MATCHER.match(uri)) {
             case SESSIONS:
                 return "vnd.android.cursor.dir/vnd." + AUTHORITY + ".session";
+            case FILES:
+                return "vnd.android.cursor.dir/vnd." + AUTHORITY + ".file";
             case THUMB:
                 return "image/jpeg";
             case FILE: {
