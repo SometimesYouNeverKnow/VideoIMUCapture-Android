@@ -1,6 +1,7 @@
 package se.lth.math.videoimucapture;
 
 import android.content.ContentProvider;
+import android.content.Context;
 import android.content.ContentValues;
 import android.content.UriMatcher;
 import android.database.Cursor;
@@ -38,6 +39,8 @@ import java.util.List;
  */
 public final class RollProvider extends ContentProvider {
     public static final String AUTHORITY = "se.lth.math.videoimucapture.roll";
+    /** The collection an observer watches; a delete tells it the roll changed. */
+    private static final Uri SESSIONS_URI = Uri.parse("content://" + AUTHORITY + "/sessions");
 
     public static final String COL_NAME = "name";
     public static final String COL_MODE = "mode";
@@ -65,6 +68,7 @@ public final class RollProvider extends ContentProvider {
     private static final int THUMB = 2;
     private static final int FILE = 3;
     private static final int FILES = 4;
+    private static final int SESSION = 5;
     private static final UriMatcher MATCHER = new UriMatcher(UriMatcher.NO_MATCH);
 
     static {
@@ -72,6 +76,7 @@ public final class RollProvider extends ContentProvider {
         MATCHER.addURI(AUTHORITY, "sessions/*/thumb", THUMB);
         MATCHER.addURI(AUTHORITY, "sessions/*/files", FILES);
         MATCHER.addURI(AUTHORITY, "sessions/*/files/*", FILE);
+        MATCHER.addURI(AUTHORITY, "sessions/*", SESSION);
     }
 
     private Thumbs mThumbs;
@@ -223,9 +228,59 @@ public final class RollProvider extends ContentProvider {
         throw new UnsupportedOperationException("The roll is read-only");
     }
 
+    /**
+     * Delete one session, named in the URI: {@code content://<authority>/sessions/<name>}.
+     *
+     * The only destructive operation in this provider, and deliberately the narrowest
+     * one that does the job. A delete on the collection, or with a selection, would be
+     * able to empty the roll in a single call; that is refused. Deleting by name means
+     * the caller has already decided about exactly this session.
+     *
+     * Whether a session is SAFE to delete is not a question the provider can answer --
+     * it knows nothing about uploads. Pocket gates the button on the host having
+     * verified the footage (EpochRift_Pocket#10); here we only obey.
+     *
+     * @return 1 when a session was removed, 0 when no such session exists.
+     */
     @Override
     public int delete(@NonNull Uri uri, @Nullable String selection, @Nullable String[] selectionArgs) {
-        throw new UnsupportedOperationException("The roll is read-only");
+        if (MATCHER.match(uri) != SESSION) {
+            throw new UnsupportedOperationException(
+                    "Only one session at a time may be deleted: sessions/<name>");
+        }
+        if (selection != null || selectionArgs != null) {
+            throw new UnsupportedOperationException("The roll deletes by name, never by selection");
+        }
+        String name = uri.getLastPathSegment();
+        File dir = sessionDir(name);
+        if (dir == null) {
+            return 0;
+        }
+        if (!deleteTree(dir)) {
+            // Partially deleted is the worst outcome to report as success: the roll
+            // would stop showing footage that is still taking up the card.
+            throw new IllegalStateException("Could not fully delete session " + name);
+        }
+        // A cached thumbnail would otherwise outlive the footage it stands for.
+        mThumbs.forget(name);
+        Context ctx = getContext();
+        if (ctx != null) {
+            ctx.getContentResolver().notifyChange(SESSIONS_URI, null);
+        }
+        return 1;
+    }
+
+    /** Depth-first, because {@link File#delete()} will not remove a directory with contents. */
+    private static boolean deleteTree(File file) {
+        File[] children = file.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                if (!deleteTree(child)) {
+                    return false;
+                }
+            }
+        }
+        return file.delete();
     }
 
     @Override
