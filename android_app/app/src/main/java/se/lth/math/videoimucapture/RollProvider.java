@@ -237,8 +237,10 @@ public final class RollProvider extends ContentProvider {
     }
 
     /**
-     * Delete one session: 1 if it was removed, 0 if there was no such session. Anything
-     * wider than one named session is refused outright (see the class comment).
+     * Delete one session: 1 if it was removed, 0 if there was no such session. A session
+     * only partly removed, or still being recorded, throws IllegalStateException with a
+     * message the caller can show. Anything wider than one named session is refused
+     * outright (see the class comment).
      */
     @Override
     public int delete(@NonNull Uri uri, @Nullable String selection, @Nullable String[] selectionArgs) {
@@ -251,14 +253,20 @@ public final class RollProvider extends ContentProvider {
             return 0;
         }
         if (System.currentTimeMillis() - newestWrite(dir) < BUSY_MS) {
-            throw new IllegalStateException("Session is still being written");
+            throw new IllegalStateException("Still being recorded");
         }
         boolean gone = SessionSummary.deleteTree(dir);
+        // Either way the roll changed and the thumbnail no longer stands for all of it.
         mThumbs.forget(dir.getName());
         Uri sessions = new Uri.Builder().scheme("content").authority(AUTHORITY)
                 .appendPath("sessions").build();
         getContext().getContentResolver().notifyChange(sessions, null);
-        return gone ? 1 : 0;
+        if (!gone) {
+            // Partly deleted is the worst outcome to report as success: the roll would
+            // stop counting footage that is still taking up the card. (From #6.)
+            throw new IllegalStateException("Could not fully delete the session");
+        }
+        return 1;
     }
 
     /** When anything in the session last changed, the directory itself included. */
