@@ -17,7 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Read-only window onto the film roll for the one app allowed to look through it.
+ * A window onto the film roll for the one app allowed to look through it.
  *
  * Recordings live in this app's private external files dir, which no other app can read
  * on Android 11+ -- not even through the folder picker. EpochRift Pocket needs the roll
@@ -31,7 +31,15 @@ import java.util.List;
  *   content://se.lth.math.videoimucapture.roll/sessions/{name}/thumb          openFile: JPEG
  *   content://se.lth.math.videoimucapture.roll/sessions/{name}/files          query: one row per file
  *   content://se.lth.math.videoimucapture.roll/sessions/{name}/files/{file}   openFile: read-only
+ *   content://se.lth.math.videoimucapture.roll/sessions/{name}                delete: that one session
  * </pre>
+ *
+ * Delete is the one irreversible thing here. It exists so Pocket can clear footage from
+ * the phone once it is safe on a store (VideoIMUCapture#5) instead of that being done by
+ * hand in a file manager. It is deliberately narrow: one named session per call, never
+ * the collection and never a selection, so no single call can empty the roll. It needs
+ * {@code DELETE_ROLL}, a second signature-level permission, because the provider is
+ * exported and READ_ROLL only guards reads -- without it any app could delete.
  *
  * Nothing here takes a path from the caller: {@code name} must be a directory directly
  * under the roll root and {@code file} a plain file directly under it.
@@ -65,6 +73,10 @@ public final class RollProvider extends ContentProvider {
     private static final int THUMB = 2;
     private static final int FILE = 3;
     private static final int FILES = 4;
+    private static final int SESSION = 5;
+
+    /** A session with a file written this recently is taken to be still recording. */
+    private static final long BUSY_MS = 30_000L;
     private static final UriMatcher MATCHER = new UriMatcher(UriMatcher.NO_MATCH);
 
     static {
@@ -72,6 +84,7 @@ public final class RollProvider extends ContentProvider {
         MATCHER.addURI(AUTHORITY, "sessions/*/thumb", THUMB);
         MATCHER.addURI(AUTHORITY, "sessions/*/files", FILES);
         MATCHER.addURI(AUTHORITY, "sessions/*/files/*", FILE);
+        MATCHER.addURI(AUTHORITY, "sessions/*", SESSION);
     }
 
     private Thumbs mThumbs;
@@ -223,9 +236,41 @@ public final class RollProvider extends ContentProvider {
         throw new UnsupportedOperationException("The roll is read-only");
     }
 
+    /**
+     * Delete one session: 1 if it was removed, 0 if there was no such session. Anything
+     * wider than one named session is refused outright (see the class comment).
+     */
     @Override
     public int delete(@NonNull Uri uri, @Nullable String selection, @Nullable String[] selectionArgs) {
-        throw new UnsupportedOperationException("The roll is read-only");
+        if (MATCHER.match(uri) != SESSION || selection != null
+                || (selectionArgs != null && selectionArgs.length > 0)) {
+            throw new UnsupportedOperationException("Only one named session can be deleted");
+        }
+        File dir = sessionDir(uri.getPathSegments().get(1));
+        if (dir == null) {
+            return 0;
+        }
+        if (System.currentTimeMillis() - newestWrite(dir) < BUSY_MS) {
+            throw new IllegalStateException("Session is still being written");
+        }
+        boolean gone = SessionSummary.deleteTree(dir);
+        mThumbs.forget(dir.getName());
+        Uri sessions = new Uri.Builder().scheme("content").authority(AUTHORITY)
+                .appendPath("sessions").build();
+        getContext().getContentResolver().notifyChange(sessions, null);
+        return gone ? 1 : 0;
+    }
+
+    /** When anything in the session last changed, the directory itself included. */
+    private static long newestWrite(File dir) {
+        long newest = dir.lastModified();
+        File[] kids = dir.listFiles();
+        if (kids != null) {
+            for (File k : kids) {
+                newest = Math.max(newest, k.isDirectory() ? newestWrite(k) : k.lastModified());
+            }
+        }
+        return newest;
     }
 
     @Override
