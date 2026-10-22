@@ -229,8 +229,9 @@ public class StillCaptureManager {
         mIo.shutdown();
         try {
             // A burst in flight is tens of MB; losing it to a fast teardown would be
-            // silent data loss.
-            if (!mIo.awaitTermination(5, TimeUnit.SECONDS)) {
+            // silent data loss. Ten seconds, not five: an OBJECT composite now queues six
+            // 25 MB DNGs (the bracket's five and the single) on this thread.
+            if (!mIo.awaitTermination(10, TimeUnit.SECONDS)) {
                 Log.w(TAG, "still writes did not finish before release");
             }
         } catch (InterruptedException e) {
@@ -577,16 +578,20 @@ public class StillCaptureManager {
                 public void onCaptureCompleted(@NonNull CameraCaptureSession session,
                                                @NonNull CaptureRequest request,
                                                @NonNull TotalCaptureResult result) {
+                    // The metadata row first: its index names this frame's files, and the
+                    // DNG must carry the SAME name as the row that describes its exposure.
+                    int index = writeStillMeta(result);
                     if (mRawReader != null) {
                         Long ts = result.get(TotalCaptureResult.SENSOR_TIMESTAMP);
                         if (ts != null) {
                             synchronized (mRawLock) {
                                 mRawResults.put(ts, result);
+                                mRawNames.put(ts, String.format(Locale.US,
+                                        "still_%d_%02d.dng", mBurstId, index));
                             }
                             drainRawPairs();
                         }
                     }
-                    writeStillMeta(result);
                 }
 
                 @Override
@@ -599,11 +604,12 @@ public class StillCaptureManager {
                 }
             };
 
-    private void writeStillMeta(TotalCaptureResult result) {
-        if (mRecordingWriter == null) {
-            return;
-        }
+    /** Queue the frame's metadata row; returns its index within the burst, which names its files. */
+    private int writeStillMeta(TotalCaptureResult result) {
         int index = mShotCounter++;
+        if (mRecordingWriter == null) {
+            return index;
+        }
         String stem = String.format(Locale.US, "still_%d_%02d", mBurstId, index);
 
         RecordingProtos.StillMetaData.Builder b = RecordingProtos.StillMetaData.newBuilder()
@@ -680,6 +686,7 @@ public class StillCaptureManager {
 
         StillRows.addOrientation(b, mImuManager);
         mRecordingWriter.queueData(b.build());
+        return index;
     }
 
     private void onJpeg(ImageReader reader) {
@@ -731,12 +738,20 @@ public class StillCaptureManager {
      * The two callbacks race — measured on the SM-S928U, the first three images of a
      * five-shot burst landed BEFORE any result — so neither stream may assume it leads.
      * Pairing is by SENSOR_TIMESTAMP, which Image.getTimestamp() reports identically.
+     *
+     * The NAME is fixed here, from the metadata row of the same timestamp, and the write
+     * goes to the IO thread. Both matter once a whole exposure bracket carries RAW (OBJECT
+     * mode since 0.24): this used to write each 25 MB DNG synchronously on the camera
+     * handler and name it from mBurstId and a running counter AT WRITE TIME, so five DNGs
+     * held the handler for seconds, and the next stage's captureStills -- which resets both
+     * -- could land mid-bracket and file the bracket's last frames under the wrong burst
+     * with the wrong index, i.e. against another frame's exposure.
      */
     private void drainRawPairs() {
         while (true) {
-            Image image;
-            TotalCaptureResult result;
-            long ts;
+            final Image image;
+            final TotalCaptureResult result;
+            String name;
             synchronized (mRawLock) {
                 Long match = null;
                 for (Long key : mRawImages.keySet()) {
@@ -748,22 +763,26 @@ public class StillCaptureManager {
                 if (match == null) {
                     return;
                 }
-                ts = match;
-                image = mRawImages.remove(ts);
-                result = mRawResults.remove(ts);
+                image = mRawImages.remove(match);
+                result = mRawResults.remove(match);
+                name = mRawNames.remove(match);
             }
-            int index = mRawWritten++;
-            File out = new File(mOutputDir,
-                    String.format(Locale.US, "still_%d_%02d.dng", mBurstId, index));
-            try (DngCreator dng = new DngCreator(mCharacteristics, result);
-                 FileOutputStream s = new FileOutputStream(out)) {
-                dng.writeImage(s, image);
-                Log.d(TAG, "wrote " + out.getName());
-            } catch (IOException | IllegalStateException e) {
-                Log.e(TAG, "DNG write failed: " + e);
-            } finally {
-                image.close();
+            if (name == null) {
+                name = String.format(Locale.US, "still_%d_%02d.dng", mBurstId, mRawWritten);
             }
+            mRawWritten++;
+            final File out = new File(mOutputDir, name);
+            mIo.execute(() -> {
+                try (DngCreator dng = new DngCreator(mCharacteristics, result);
+                     FileOutputStream s = new FileOutputStream(out)) {
+                    dng.writeImage(s, image);
+                    Log.d(TAG, "wrote " + out.getName());
+                } catch (IOException | IllegalStateException e) {
+                    Log.e(TAG, "DNG write failed: " + e);
+                } finally {
+                    image.close();
+                }
+            });
         }
     }
 
@@ -776,5 +795,7 @@ public class StillCaptureManager {
     private final LinkedHashMap<Long, Image> mRawImages = new LinkedHashMap<>();
     private final LinkedHashMap<Long, TotalCaptureResult> mRawResults =
             new LinkedHashMap<>();
+    // timestamp -> the DNG's file name, from the metadata row written for that frame
+    private final HashMap<Long, String> mRawNames = new HashMap<>();
     private int mRawWritten;
 }
