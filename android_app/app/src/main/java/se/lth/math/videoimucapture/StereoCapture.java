@@ -622,6 +622,7 @@ public class StereoCapture {
         // census — 4000x3000 for the ultrawide, 4080x3060 for the main. Anything narrower
         // is the crop that made the two frames match.
         StillRows.recordCrop(b, per, result);
+        StillRows.recordIntrinsics(b, per);
         Integer flash = result.get(TotalCaptureResult.FLASH_MODE);
         b.setTorchOn(flash != null
                 && flash == CameraMetadata.FLASH_MODE_TORCH);

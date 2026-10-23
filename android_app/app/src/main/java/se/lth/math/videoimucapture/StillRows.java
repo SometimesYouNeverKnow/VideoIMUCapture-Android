@@ -35,6 +35,31 @@ final class StillRows {
         }
     }
 
+    /**
+     * This lens's focal and distortion at this shot, as the HAL reports them. A lens's focal
+     * moves with its focus, so this row, beside focus_distance_diopters, is one point on that
+     * lens's focus law.
+     *
+     * @param per this lens's own result where the device supplies one, else the logical result.
+     */
+    static void recordIntrinsics(RecordingProtos.StillMetaData.Builder b, CaptureResult per) {
+        if (Build.VERSION.SDK_INT < 28) {
+            return;
+        }
+        float[] k = per.get(CaptureResult.LENS_INTRINSIC_CALIBRATION);
+        if (k != null) {
+            for (float v : k) {
+                b.addLensIntrinsicCalibration(v);
+            }
+        }
+        float[] d = per.get(CaptureResult.LENS_DISTORTION);
+        if (d != null) {
+            for (float v : d) {
+                b.addLensDistortion(v);
+            }
+        }
+    }
+
     /** The orientation at the shutter instant, which is what lets a pan be stitched from angles. */
     static void addOrientation(RecordingProtos.StillMetaData.Builder b, IMUManager imu) {
         if (imu == null) {

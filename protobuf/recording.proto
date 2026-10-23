@@ -404,6 +404,16 @@ message StillMetaData {
   // The per-physical result stamps cannot answer either: on this HAL they sit up to ~100 ms
   // apart within ONE request, on a clock of their own.
   int64 logical_result_time_ns = 29;
+
+  // THIS LENS'S OWN focal at THIS shot: CaptureResult.LENS_INTRINSIC_CALIBRATION (fx, fy, cx, cy,
+  // skew) and LENS_DISTORTION, from the per-physical result where the device supplies one. Every
+  // lens magnifies as it focuses near, and the factory intrinsics are the infinity values. The
+  // video frames record this for the logical camera, which is where the main lens's law came
+  // from (+0.711% per dioptre, ReconStab 2026-10-10). No other lens had a law, so the turntable
+  // solve could correct none of them (ReconStab 2026-10-22). With this, every press records
+  // every lens's focal beside its focus_distance_diopters. Empty when the HAL doesn't report it.
+  repeated float lens_intrinsic_calibration = 30;
+  repeated float lens_distortion = 31;
 }
 
 // GNSS fix from LocationManager (GPS provider, no fused black box).

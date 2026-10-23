@@ -19,8 +19,8 @@ android {
         applicationId "se.lth.math.videoimucapture"
         minSdkVersion 24
         targetSdkVersion 34
-        versionCode 24
-        versionName "0.24"
+        versionCode 25
+        versionName "0.25"
 
         // WHICH BUILD SHOT THIS. versionName alone cannot answer it: a version is bumped once
         // and then a dozen builds carry it, so two clips that behave differently can both say
