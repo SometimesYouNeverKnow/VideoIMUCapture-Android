@@ -649,6 +649,7 @@ public class StillCaptureManager {
         if (fl != null) {
             b.setFocalLengthMm(fl);
         }
+        StillRows.recordIntrinsics(b, result);
         Long dur = result.get(TotalCaptureResult.SENSOR_FRAME_DURATION);
         if (dur != null) {
             b.setFrameDurationNs(dur);
