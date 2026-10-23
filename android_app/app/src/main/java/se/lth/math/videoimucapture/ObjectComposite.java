@@ -112,10 +112,18 @@ final class ObjectComposite {
         proxy.captureFocusStack(5, false, dir, writer);
         fired[0] += 5;
 
+        // RAW ON EVERY BRACKET FRAME (0.24). The JPEGs cannot be merged into radiance: measured
+        // by ReconStab on object_2026_10_21_11_32_49 (docs/notes-2026-10-22-stills-solve.md),
+        // adjacent shots of a -2..+2 bracket disagree by up to 0.49 stops after the sRGB decode
+        // -- the dark frames lifted, the bright ones pulled down, i.e. tone-mapped per frame --
+        // and a JPEG-to-linear curve measured against this composite's own DNG does worse, with
+        // 34% spread inside a single JPEG value, because the tone mapping is local. A DNG is
+        // linear by construction, so a bracket of them merges with nothing to undo. Costs
+        // ~125 MB per press.
         mMain.postDelayed(() -> {
-            mListener.onStage("OBJECT · exposure bracket");
+            mListener.onStage("OBJECT · exposure bracket (RAW)");
             proxy.captureStills(StillCaptureManager.Mode.EXPOSURE_BRACKET, 5, 2.0f,
-                    false, dir, writer);
+                    true, dir, writer);
             fired[0] += 5;
         }, 4000L);
 
